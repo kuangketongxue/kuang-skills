@@ -30,22 +30,22 @@ metadata:
 
 收尾审计前必须先拉全量本次会话的用户消息，列清本次会话所有需求/改动/踩坑——这是"现役事实矩阵"（第 1 步）的用户需求侧输入。会话可能很长且经过 /compact，**compact 只压缩 LLM 上下文窗口、不动磁盘 transcript jsonl**，只看最近几轮或会话内摘要会漏审 compact 前的需求（曾漏 outdoor v2.5.3、think-aloud 部署、飞书字段规则等明确需求），导致收尾遗漏。
 
-运行提取脚本（与 self-improving-agent skill 共用，已验证 73 条 / 跨 5 次 compact）：
+运行 neat-freak **自带**的提取脚本（`scripts/extract_transcript.py`，与 self-improving-agent skill 同源、compact summary 盲区已修；默认 `--all` 扫当前 cwd 全部 jsonl + 24h 时间过滤，聚焦本次会话不扫历史全量）：
 
 ```
-python ~/.claude/skills/self-improving-agent/scripts/extract_transcript.py --out /tmp/nf-transcript.md
+python ~/.claude/skills/neat-freak/scripts/extract_transcript.py --all --out /tmp/nf-transcript.md
 ```
 
 **Windows（本机）必读**：`~` 和 `/tmp` 在 Windows python **不认**（FileNotFoundError），用绝对路径——
 ```
-python "C:/Users/kuang/.claude/skills/self-improving-agent/scripts/extract_transcript.py" --out "C:/Users/kuang/AppData/Local/Temp/nf-transcript.md"
+python "C:/Users/kuang/.claude/skills/neat-freak/scripts/extract_transcript.py" --all --out "C:/Users/kuang/AppData/Local/Temp/nf-transcript.md"
 ```
 
-脚本自动发现当前 cwd 最近 3 个 jsonl 合并（覆盖 compact 前后；`--all` 取该 cwd 所有会话；`--n N` 调数量；`<path>` 指定单文件）。过滤掉 tool_result / system-reminder 注入 / task-notification / skill body 全文（按 `isSidechain`/`isMeta` 标志跳过系统注入——这是过滤 skill body 污染的最可靠标志，标签检测会漏因为注入是纯文本无 `<command-message>` 标签），只留真实用户文本 + 用户调过的命令名。
+脚本默认 `--all` 扫当前 cwd 全部 jsonl（覆盖 compact 前后 + 跨 session 连续工作），并**按消息 timestamp 过滤只保留最近 24 小时**——收尾审计聚焦本次会话，不扫 18 天前已闭环的历史需求（曾因 `--all` 无时间窗扫到 850 条 / 跨 58 个 jsonl 18 天，浪费上下文）。`--hours N` 调时间窗（`--hours 0` 关闭过滤取全部历史，仅跨天全量审计用，输出很大务必 `--out` 写文件分段 Read）；`--n N` 调文件数量；`<path>` 指定单文件。过滤掉 tool_result / system-reminder 注入 / task-notification / skill body 全文（按 `isSidechain`/`isMeta` 标志跳过系统注入——这是过滤 skill body 污染的最可靠标志，标签检测会漏因为注入是纯文本无 `<command-message>` 标签），只留真实用户文本 + 用户调过的命令名。
 
 **Read 输出文件全量回顾**，逐条核对：用户提过哪些需求、改了哪些文件/仓库、哪些踩坑已修、哪些需求还没走到 ✅完成 / 📋挂起 / ❌取消。**禁止只靠会话内摘要或最近几轮**——compact 摘要丢细节，transcript 原文不丢。结构详见 [[transcript-jsonl-structure]]。
 
-**扫"所有对话"用 `--all`**：用户说"所有需求 / 全部对话 / 我的需求都完成了吗"时，脚本必加 `--all` 取当前 cwd 全部会话（默认只取最近 3 个 jsonl，会漏更早会话的需求）。跨 cwd 的会话脚本不覆盖（按 cwd 分组），列为限制告知用户。
+**默认就扫全部会话 + 24h 过滤**：脚本默认 `--all`（扫当前 cwd 全部 jsonl）+ 最近 24 小时时间窗，已覆盖"用户说'所有需求 / 全部对话 / 我的需求都完成了吗'"的场景——本次会话的需求都在 24h 窗内，不会漏（compact 不切 jsonl，同 session 的 compact 前后都在窗内）。**只有用户明确要"跨天全量审计 / 看更早会话的需求"时，才加 `--hours 0`（或 `--hours 168` 看一周）**取历史全量；此时输出可能很大，务必 `--out` 写文件分段 Read。跨 cwd 的会话脚本不覆盖（按 cwd 分组），列为限制告知用户。
 
 **需求完成度审计（本次回顾的核心产出，不只是"列出"）**：逐条判定每条需求的闭环状态——这是全局规则"需求闭环（不许丢需求）"的审计入口（见用户 CLAUDE.md）。每条需求必须走到以下状态之一，输出矩阵：
 
