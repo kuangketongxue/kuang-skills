@@ -16,7 +16,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Callable, Dict, NoReturn, Tuple
+from typing import Any, Dict, NoReturn, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -47,12 +47,48 @@ def _load_env() -> None:
 
 
 _load_env()
-API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
-SECRET = API_KEY  # redacted wherever it appears in output
+PRIMARY_KEY_ENV = "FIRECRAWL_API_KEY"
+KEYS_ENV = "FIRECRAWL_API_KEYS"
 DEFAULT_K = 10
 REQUEST_TIMEOUT_SECONDS = 45
 RETRY_COUNT = 1
 RETRY_DELAY_SECONDS = 2
+
+
+def _load_keys(primary_env: str, list_env: str) -> list[str]:
+    """读 list_env（逗号分隔多个 key）；未设时回退 primary_env（单个）。去重保序。"""
+    keys: list[str] = []
+    for part in os.getenv(list_env, "").split(","):
+        part = part.strip().strip('"').strip("'")
+        if part and part not in keys:
+            keys.append(part)
+    if not keys:
+        single = os.getenv(primary_env, "").strip().strip('"').strip("'")
+        if single:
+            keys.append(single)
+    return keys
+
+
+class _QuotaExceeded(Exception):
+    """当前 key 额度/频率耗尽，切换下一个 key 重试。"""
+
+    def __init__(self, code: int, body_text: str) -> None:
+        super().__init__(f"HTTP {code}")
+        self.code = code
+        self.body_text = body_text
+
+
+def _is_quota_error(code: int, body_text: str) -> bool:
+    """402/429 必是额度或计费；403 带额度关键词才算（避免把 401 权限错当额度用）。"""
+    if code in (402, 429):
+        return True
+    if code == 403:
+        low = body_text.lower()
+        return any(w in low for w in ("quota", "limit", "rate", "usage", "exceeded", "allowance", "plan"))
+    return False
+
+
+KEYS = _load_keys(PRIMARY_KEY_ENV, KEYS_ENV)  # 主用在前，额度用完自动切备用
 
 
 def print_usage() -> None:
@@ -69,8 +105,8 @@ def print_usage() -> None:
 
 
 def _redact(text: str) -> str:
-    if SECRET:
-        text = text.replace(SECRET, "***")
+    for key in KEYS:
+        text = text.replace(key, "***")
     return text
 
 
@@ -149,41 +185,38 @@ def parse_params(payload: Dict[str, Any]) -> Tuple[str, int]:
 
 
 def request_dev(query: str, k: int) -> str:
-    if not API_KEY:
-        die("missing FIRECRAWL_API_KEY — set in ~/.claude/.secrets/web-search.env or FIRECRAWL_API_KEY env var")
+    if not KEYS:
+        die(f"missing {PRIMARY_KEY_ENV} / {KEYS_ENV} — set in ~/.claude/.secrets/web-search.env")
     params = urlencode({"query": query, "k": str(k)})
     url = f"{API_URL}?{params}"
 
-    def build_req() -> Request:
-        return Request(
-            url,
-            method="GET",
-            headers={"Authorization": f"Bearer {API_KEY}"},
-        )
-
-    return _request_with_retry(build_req)
-
-
-def _request_with_retry(build_req: Callable[[], Request]) -> str:
     last_exc: Exception | None = None
-    for attempt in range(RETRY_COUNT + 1):
-        if attempt > 0:
-            time.sleep(RETRY_DELAY_SECONDS)
-        req = build_req()
-        try:
-            with urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-                return resp.read().decode("utf-8", errors="replace")
-        except HTTPError as err:
-            body_text = err.read().decode("utf-8", errors="replace")
-            if 400 <= err.code < 500:
-                die(f"HTTP {err.code} from Firecrawl Developer API", body=body_text)
-            last_exc = err
-            continue
-        except (URLError, TimeoutError) as err:
-            last_exc = err
-            continue
+    last_body: str = ""
+    for key_idx, api_key in enumerate(KEYS):
+        for attempt in range(RETRY_COUNT + 1):
+            if attempt > 0:
+                time.sleep(RETRY_DELAY_SECONDS)
+            req = Request(url, method="GET", headers={"Authorization": f"Bearer {api_key}"})
+            try:
+                with urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except HTTPError as err:
+                body_text = err.read().decode("utf-8", errors="replace")
+                last_exc = err
+                last_body = body_text
+                # 额度/频率耗尽 → 切下一个 key；401 等客户端错误不重试。
+                if _is_quota_error(err.code, body_text) and key_idx + 1 < len(KEYS):
+                    break
+                if 400 <= err.code < 500:
+                    die(f"HTTP {err.code} from Firecrawl Developer API", body=body_text)
+                continue
+            except (URLError, TimeoutError) as err:
+                last_exc = err
+                continue
     die(
-        f"Firecrawl Developer request failed after {RETRY_COUNT + 1} attempts: {last_exc}"
+        f"Firecrawl Developer request failed across {len(KEYS)} key(s) after retries: {last_exc}"
+        f" (last body: {last_body[:200]})",
+        body=last_body,
     )
 
 

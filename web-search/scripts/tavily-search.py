@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Callable, Dict, NoReturn, Tuple
+from typing import Any, Dict, NoReturn, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -43,11 +43,47 @@ def _load_env() -> None:
 
 
 _load_env()
-API_KEY = os.getenv("TAVILY_API_KEY", "")
-SECRET = API_KEY  # redacted wherever it appears in output
+PRIMARY_KEY_ENV = "TAVILY_API_KEY"
+KEYS_ENV = "TAVILY_API_KEYS"
 REQUEST_TIMEOUT_SECONDS = 45
 RETRY_COUNT = 1
 RETRY_DELAY_SECONDS = 2
+
+
+def _load_keys(primary_env: str, list_env: str) -> list[str]:
+    """读 list_env（逗号分隔多个 key）；未设时回退 primary_env（单个）。去重保序。"""
+    keys: list[str] = []
+    for part in os.getenv(list_env, "").split(","):
+        part = part.strip().strip('"').strip("'")
+        if part and part not in keys:
+            keys.append(part)
+    if not keys:
+        single = os.getenv(primary_env, "").strip().strip('"').strip("'")
+        if single:
+            keys.append(single)
+    return keys
+
+
+class _QuotaExceeded(Exception):
+    """当前 key 额度/频率耗尽，切换下一个 key 重试。"""
+
+    def __init__(self, code: int, body_text: str) -> None:
+        super().__init__(f"HTTP {code}")
+        self.code = code
+        self.body_text = body_text
+
+
+def _is_quota_error(code: int, body_text: str) -> bool:
+    """402/429 必是额度或计费；403 带额度关键词才算（避免把 401 权限错当额度用）。"""
+    if code in (402, 429):
+        return True
+    if code == 403:
+        low = body_text.lower()
+        return any(w in low for w in ("quota", "limit", "rate", "usage", "exceeded", "allowance", "plan"))
+    return False
+
+
+KEYS = _load_keys(PRIMARY_KEY_ENV, KEYS_ENV)  # 主用在前，额度用完自动切备用
 
 
 def print_usage() -> None:
@@ -65,8 +101,8 @@ def print_usage() -> None:
 
 
 def _redact(text: str) -> str:
-    if SECRET:
-        text = text.replace(SECRET, "***")
+    for key in KEYS:
+        text = text.replace(key, "***")
     return text
 
 
@@ -133,49 +169,52 @@ def parse_params(payload: Dict[str, Any]) -> Tuple[str, int, str]:
 
 
 def request_tavily(query: str, max_results: int, search_depth: str) -> str:
-    if not API_KEY:
-        die("missing TAVILY_API_KEY — set in ~/.claude/.secrets/web-search.env or TAVILY_API_KEY env var")
-    body = json.dumps(
-        {
-            "api_key": API_KEY,
-            "query": query,
-            "max_results": max_results,
-            "search_depth": search_depth,
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
+    if not KEYS:
+        die(f"missing {PRIMARY_KEY_ENV} / {KEYS_ENV} — set in ~/.claude/.secrets/web-search.env")
 
-    def build_req() -> Request:
-        return Request(
-            API_URL,
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-
-    return _request_with_retry(build_req)
-
-
-def _request_with_retry(build_req: Callable[[], Request]) -> str:
     last_exc: Exception | None = None
-    for attempt in range(RETRY_COUNT + 1):
-        if attempt > 0:
-            time.sleep(RETRY_DELAY_SECONDS)
-        req = build_req()
-        try:
-            with urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-                return resp.read().decode("utf-8", errors="replace")
-        except HTTPError as err:
-            body_text = err.read().decode("utf-8", errors="replace")
-            # 4xx client errors won't be fixed by retrying.
-            if 400 <= err.code < 500:
-                die(f"HTTP {err.code} from Tavily API", body=body_text)
-            last_exc = err
-            continue
-        except (URLError, TimeoutError) as err:
-            last_exc = err
-            continue
-    die(f"Tavily request failed after {RETRY_COUNT + 1} attempts: {last_exc}")
+    last_body: str = ""
+    for key_idx, api_key in enumerate(KEYS):
+        # 对每个 key，最多 RETRY_COUNT+1 次普通重试
+        for attempt in range(RETRY_COUNT + 1):
+            if attempt > 0:
+                time.sleep(RETRY_DELAY_SECONDS)
+            body = json.dumps(
+                {
+                    "api_key": api_key,
+                    "query": query,
+                    "max_results": max_results,
+                    "search_depth": search_depth,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            req = Request(
+                API_URL,
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except HTTPError as err:
+                body_text = err.read().decode("utf-8", errors="replace")
+                last_exc = err
+                last_body = body_text
+                # 额度/频率耗尽 → 切下一个 key；401 等客户端错误不重试。
+                if _is_quota_error(err.code, body_text) and key_idx + 1 < len(KEYS):
+                    break
+                if 400 <= err.code < 500:
+                    die(f"HTTP {err.code} from Tavily API", body=body_text)
+                continue
+            except (URLError, TimeoutError) as err:
+                last_exc = err
+                continue
+    die(
+        f"Tavily request failed across {len(KEYS)} key(s) after retries: {last_exc}"
+        f" (last body: {last_body[:200]})",
+        body=last_body,
+    )
 
 
 def main() -> None:

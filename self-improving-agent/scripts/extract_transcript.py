@@ -66,6 +66,41 @@ def _extract_command_intent(text):
     return ' | '.join(parts) if parts else None
 
 
+# 轻量分类标记（规则关键词，不调 LLM）。优先级：纠正 > 踩坑 > 需求 > 偏好。
+# 是回顾时的线索，不是定论——误标可接受。
+_CATEGORY_RULES = [
+    ('纠正', ('不要问', '不要说', '别再', '错了', '不是这个', '我说的是', '为什么还',
+              '为什么', '停下来', '打断', '不对', '不需要', '不是说了', '为什么还要')),
+    ('踩坑', ('报错', '失败', '超时', '不行', '卡住', '崩溃', 'error', '异常', '没成功', '翻车')),
+    ('需求', ('优化', '加', '改', '做', '需要', '请', '帮我', '能不能', '可以', '要求',
+              '保存', '删除', '备份', '加入', '更新', '升级')),
+    ('偏好', ('以后都', '永远', '默认', '喜欢', '习惯', '每次都', '一律')),
+]
+# 收尾噪声词：短消息含这些词 = 纯推进/完成度问答，回顾时折叠不逐条列。
+_NOISE_WORDS = ('搞定', '确认', '清', '收到', '处理了', '完成', '继续', '好了', '可以了',
+                '明白', '了解', 'ok', 'done', '是的', '对', '好', '嗯', '行',
+                '已经处理', '全部搞定', '搞定完', '了吗', '处理完')
+
+
+def classify(text):
+    """规则关键词分类，返回类别名或 None。优先级纠正>踩坑>需求>偏好。"""
+    low = text.lower() if text else ''
+    for cat, words in _CATEGORY_RULES:
+        for w in words:
+            if w in low:
+                return cat
+    return None
+
+
+def is_noise(text):
+    """短消息（<20 字）+ 收尾/完成度词 = 回顾噪声，默认折叠。长消息有实质不过滤。"""
+    s = text.strip()
+    if not s or len(s) >= 20:
+        return False
+    low = s.lower()
+    return any(w in low for w in _NOISE_WORDS)
+
+
 def extract_user_msgs(path):
     """从单个 jsonl 提取真实用户消息 [(timestamp, text)]"""
     msgs = []
@@ -126,9 +161,9 @@ def extract_user_msgs(path):
             if '<command-message>' in s or '<command-name>' in s or '<command-args>' in s:
                 intent = _extract_command_intent(s)
                 if intent:
-                    msgs.append((ts, '[用户调用命令] ' + intent))
+                    msgs.append((ts, '[用户调用命令] ' + intent, classify('[用户调用命令] ' + intent)))
                 continue
-            msgs.append((ts, s))
+            msgs.append((ts, s, classify(s)))
     return msgs
 
 
@@ -181,12 +216,12 @@ def main():
     # 去重（timestamp + 内容前 80 字符，避免同一会话被读两次）
     seen = set()
     unique = []
-    for ts, txt in all_msgs:
+    for ts, txt, cat in all_msgs:
         key = (ts, txt[:80])
         if key in seen:
             continue
         seen.add(key)
-        unique.append((ts, txt))
+        unique.append((ts, txt, cat))
 
     # 时间过滤：只保留最近 --hours 小时的消息（收尾审计聚焦本次会话，不扫历史全量）。
     # cutoff=None 表示关闭过滤（--hours 0）。parse 失败的消息保守保留（不误删当前会话）。
@@ -195,13 +230,13 @@ def main():
         cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     kept = []
     dropped_by_time = 0
-    for ts, txt in unique:
+    for ts, txt, cat in unique:
         if cutoff is not None:
             dt = parse_ts(ts)
             if dt is not None and dt < cutoff:
                 dropped_by_time += 1
                 continue
-        kept.append((ts, txt))
+        kept.append((ts, txt, cat))
 
     kept.sort(key=lambda x: x[0])
 
@@ -209,14 +244,33 @@ def main():
         window_desc = f'，时间窗最近 {args.hours:g} 小时（过滤掉 {dropped_by_time} 条更早消息）'
     else:
         window_desc = '，未开时间窗（全部历史）'
+
+    # 分类统计（回顾清单的线索）
+    cat_counts = {'纠正': 0, '踩坑': 0, '需求': 0, '偏好': 0, '未分类': 0}
+    for _, _, cat in kept:
+        if cat:
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        else:
+            cat_counts['未分类'] += 1
+    non_noise = []
+    noise_count = 0
+    for ts, txt, cat in kept:
+        if is_noise(txt) and cat is None:
+            noise_count += 1
+        else:
+            non_noise.append((ts, txt, cat))
+
     lines = ['# 会话用户输入提取',
-             f'（扫描 {len(files)} 个 jsonl，去重后 {len(kept)} 条真实用户消息{window_desc}，含 /compact 前部分）\n']
+             f'（扫描 {len(files)} 个 jsonl，去重后 {len(kept)} 条真实用户消息{window_desc}，含 /compact 前部分）\n',
+             '## 分类概览',
+             f'- 需求 {cat_counts["需求"]} · 纠正 {cat_counts["纠正"]} · 踩坑 {cat_counts["踩坑"]} · 偏好 {cat_counts["偏好"]} · 未分类 {cat_counts["未分类"]} · 噪声折叠 {noise_count}\n']
     for f in files:
         lines.append(f'- 源文件: {os.path.basename(f)}')
     lines.append('')
 
-    for ts, txt in kept:
-        lines.append(f'## [{ts}]')
+    for ts, txt, cat in non_noise:
+        tag = f'（{cat}）' if cat else ''
+        lines.append(f'## [{ts}] {tag}')
         lines.append('')
         lines.append(txt)
         lines.append('')
