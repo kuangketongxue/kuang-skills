@@ -7,7 +7,7 @@
 #### 狂客同学每天在用的 Claude Code Skills，全部开源在这里
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-6-10B981?style=for-the-badge)](#-skills-%E7%9B%AE%E5%BD%95)
+[![Skills](https://img.shields.io/badge/Skills-7-10B981?style=for-the-badge)](#-skills-%E7%9B%AE%E5%BD%95)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
 
@@ -29,6 +29,7 @@
 | 💬 [**crazy-wechat-auto（公众号自动化）**](#-crazy-wechat-auto公众号自动化) | 微信公众号文章搜索、撰写与草稿箱自动发布一体化 |
 | 📚 [**feishu-note-appender（飞书笔记追加）**](#-feishu-note-appender飞书笔记追加) | 把阅读笔记格式化后追加到飞书 Wiki 末尾，同时同步本地副本 |
 | 📬 [**agent-mail-readiness（邮件就绪检查）**](#-agent-mail-readiness邮件就绪检查) | Proactive Agent 发主动通知前的邮件通道就绪检查 |
+| 🔍 [**web-search（网络搜索）**](#-web-search网络搜索) | 五引擎并行：Tavily/Firecrawl/知乎，中文默认带知乎，API key 本地配置不进仓 |
 
 ---
 
@@ -126,6 +127,20 @@ python scripts/wechat_publish.py --title "..." # 发布到草稿箱
 Proactive Agent 在发送主动通知前检查邮件通道是否就绪的 skill（WorkBuddy 场景）。
 
 详见 [agent-qq-auto/SKILL.md](./agent-qq-auto/SKILL.md)。
+
+---
+
+### 🔍 web-search（网络搜索）
+
+五个引擎并行：Tavily、Firecrawl（含 Developer Index 开发者索引）、知乎 OpenAPI（站内 + 全网）。中文默认带知乎并行——对中文资源（含 GitHub 仓库、网盘、学习资料）命中率高于纯英文引擎。API key 本地 `~/.claude/.secrets/web-search.env` 自动读取，**本仓不含 key**，重置电脑后需自备。
+
+```bash
+python3 scripts/tavily-search.py '{"query":"Claude Code"}'        # 英文/通用深度搜索
+python3 scripts/firecrawl-dev.py '{"query":"npm install error"}'  # 开发者索引：issue/PR/官方文档
+python3 scripts/zhihu-search.py '{"query":"高三如何提分"}'         # 知乎站内（学习/高考经验）
+```
+
+详见 [web-search/SKILL.md](./web-search/SKILL.md)。
 
 ---
 

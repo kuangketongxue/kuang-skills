@@ -7,7 +7,7 @@
 #### Claude Code skills I use every day, all open-sourced here
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-6-10B981?style=for-the-badge)](#skills)
+[![Skills](https://img.shields.io/badge/Skills-7-10B981?style=for-the-badge)](#skills)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
 
@@ -29,6 +29,7 @@ Each directory is a complete, self-contained skill (SKILL.md + scripts/ + refere
 | 💬 [**crazy-wechat-auto**](#-crazy-wechat-auto) | Search, write, and auto-publish WeChat Official Account articles to drafts |
 | 📚 [**feishu-note-appender**](#-feishu-note-appender) | Format reading notes and append them to a Feishu/Lark Wiki, synced locally |
 | 📬 [**agent-mail-readiness**](#-agent-mail-readiness) | Mail-channel readiness check for proactive agents |
+| 🔍 [**web-search**](#-web-search) | Five parallel engines: Tavily / Firecrawl (+ Developer Index) / Zhihu; Chinese queries always pair with Zhihu; API keys live in local env, never in the repo |
 
 ---
 
@@ -88,6 +89,20 @@ See [feishu-note-appender/SKILL.md](./feishu-note-appender/SKILL.md).
 Readiness check for the mail channel before a proactive agent sends notifications.
 
 See [agent-qq-auto/SKILL.md](./agent-qq-auto/SKILL.md).
+
+---
+
+### 🔍 web-search
+
+Five parallel search engines: Tavily, Firecrawl (incl. Developer Index for issue/PR/docs lookup), and Zhihu OpenAPI (in-site + global). Chinese queries always pair with Zhihu for better recall on Chinese resources (GitHub repos, net-disk materials, study notes). API keys are read from `~/.claude/.secrets/web-search.env` locally — **the repo ships key-free**; bring your own keys after a reset.
+
+```bash
+python3 scripts/tavily-search.py '{"query":"Claude Code"}'
+python3 scripts/firecrawl-dev.py '{"query":"npm install error"}'
+python3 scripts/zhihu-search.py '{"query":"gaokao study tips"}'
+```
+
+See [web-search/SKILL.md](./web-search/SKILL.md).
 
 ---
 

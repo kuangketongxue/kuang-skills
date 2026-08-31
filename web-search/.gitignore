@@ -1,0 +1,7 @@
+# Real API keys — NEVER commit. Keep in ~/.claude/.secrets/web-search.env instead.
+.env
+.env.local
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
