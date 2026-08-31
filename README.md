@@ -7,7 +7,7 @@
 #### 狂客同学每天在用的 Claude Code Skills，全部开源在这里
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-7-10B981?style=for-the-badge)](#-skills-%E7%9B%AE%E5%BD%95)
+[![Skills](https://img.shields.io/badge/Skills-8-10B981?style=for-the-badge)](#-skills-%E7%9B%AE%E5%BD%95)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
 
@@ -30,6 +30,7 @@
 | 📚 [**feishu-note-appender（飞书笔记追加）**](#-feishu-note-appender飞书笔记追加) | 把阅读笔记格式化后追加到飞书 Wiki 末尾，同时同步本地副本 |
 | 📬 [**agent-mail-readiness（邮件就绪检查）**](#-agent-mail-readiness邮件就绪检查) | Proactive Agent 发主动通知前的邮件通道就绪检查 |
 | 🔍 [**web-search（网络搜索）**](#-web-search网络搜索) | 五引擎并行：Tavily/Firecrawl/知乎，中文默认带知乎，API key 本地配置不进仓 |
+| 🧠 [**self-improving-agent（自我改进）**](#-self-improving-agent自我改进) | 把 Claude Code 自动记忆「策展」成可执行的项目规则/skill，并备份/还原到私有仓 |
 
 ---
 
@@ -141,6 +142,12 @@ python3 scripts/zhihu-search.py '{"query":"高三如何提分"}'         # 知�
 ```
 
 详见 [web-search/SKILL.md](./web-search/SKILL.md)。
+
+### 🧠 self-improving-agent（自我改进）
+
+把 Claude Code 自动记忆的 MEMORY.md 里的零散经验「策展」成可执行的项目知识：分析模式、把成熟经验晋升到 CLAUDE.md 或 `.claude/rules/`、把重复踩坑提炼成可复用 skill。还带 `/si:backup` / `/si:restore`——重置电脑后从私有仓 `claude-memory-backup` 一键还原整套「自我」（含加密的 web-search key 自动还原）。
+
+详见 [self-improving-agent/README.md](./self-improving-agent/README.md)。
 
 ---
 

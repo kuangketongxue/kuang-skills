@@ -7,7 +7,7 @@
 #### Claude Code skills I use every day, all open-sourced here
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-7-10B981?style=for-the-badge)](#skills)
+[![Skills](https://img.shields.io/badge/Skills-8-10B981?style=for-the-badge)](#skills)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
 
@@ -30,6 +30,7 @@ Each directory is a complete, self-contained skill (SKILL.md + scripts/ + refere
 | 📚 [**feishu-note-appender**](#-feishu-note-appender) | Format reading notes and append them to a Feishu/Lark Wiki, synced locally |
 | 📬 [**agent-mail-readiness**](#-agent-mail-readiness) | Mail-channel readiness check for proactive agents |
 | 🔍 [**web-search**](#-web-search) | Five parallel engines: Tavily / Firecrawl (+ Developer Index) / Zhihu; Chinese queries always pair with Zhihu; API keys live in local env, never in the repo |
+| 🧠 [**self-improving-agent**](#-self-improving-agent) | Curate Claude Code's auto-memory into durable project rules/skills; back up to a private repo and restore after a PC reset |
 
 ---
 
@@ -103,6 +104,12 @@ python3 scripts/zhihu-search.py '{"query":"gaokao study tips"}'
 ```
 
 See [web-search/SKILL.md](./web-search/SKILL.md).
+
+### 🧠 self-improving-agent
+
+Curates Claude Code's auto-memory (MEMORY.md) into enforceable project knowledge: analyzes patterns, graduates proven learnings to CLAUDE.md or `.claude/rules/`, and extracts recurring debugging solutions into standalone skills. Includes `/si:backup` and `/si:restore` — restore the whole "self" from the private `claude-memory-backup` repo after a PC reset (encrypted web-search keys ride along).
+
+See [self-improving-agent/README.md](./self-improving-agent/README.md)。
 
 ---
 
