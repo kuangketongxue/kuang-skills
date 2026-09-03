@@ -39,7 +39,11 @@ _load_env()
 
 
 DEFAULT_BASE_URL = "https://developer.zhihu.com"
-REQUEST_TIMEOUT_SECONDS = 5
+# 20s（原 5s）：知乎 OpenAPI 在国内网络（联通 + GFW）下 5s 极易超时；而知乎站内
+# 是中文查询的默认引擎（SKILL.md「铁律：默认并行带知乎」），一旦超时整条默认路径就没结果。
+REQUEST_TIMEOUT_SECONDS = 20
+RETRY_COUNT = 1
+RETRY_DELAY_SECONDS = 2
 
 
 def print_usage() -> None:
@@ -146,22 +150,37 @@ def request_zhihu(query: str, count: int) -> str:
 
     params = urlencode({"Query": query, "Count": str(count)})
     url = f"{get_endpoint()}?{params}"
-    req = Request(
-        url=url,
-        method="GET",
-        headers={
-            "Authorization": f"Bearer {secret}",
-            "X-Request-Timestamp": str(int(time.time())),
-        },
-    )
 
-    try:
-        with urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-            body_text = resp.read().decode("utf-8", errors="replace")
-    except HTTPError as err:
-        die_http(err)
-    except (URLError, TimeoutError):
-        die("HTTP request failed (timeout or network error)")
+    last_exc: Exception | None = None
+    for attempt in range(RETRY_COUNT + 1):
+        if attempt > 0:
+            time.sleep(RETRY_DELAY_SECONDS)
+        # 每次尝试都重建 Request：X-Request-Timestamp 必须是当前时间，
+        # 沿用旧时间戳会让重试请求被服务端判为过期，重试就白试了。
+        req = Request(
+            url=url,
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {secret}",
+                "X-Request-Timestamp": str(int(time.time())),
+            },
+        )
+        try:
+            with urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                body_text = resp.read().decode("utf-8", errors="replace")
+            break
+        except HTTPError as err:
+            # 5xx 服务端错误值得重试一次；4xx（401 鉴权 / 429 频控）重试无益，直接报。
+            if err.code >= 500 and attempt < RETRY_COUNT:
+                err.read()
+                last_exc = err
+                continue
+            die_http(err)
+        except (URLError, TimeoutError) as err:
+            last_exc = err
+            continue
+    else:
+        die(f"Zhihu request failed after {RETRY_COUNT + 1} attempt(s): {last_exc}")
 
     try:
         json.loads(body_text)

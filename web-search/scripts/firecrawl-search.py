@@ -64,15 +64,6 @@ def _load_keys(primary_env: str, list_env: str) -> list[str]:
     return keys
 
 
-class _QuotaExceeded(Exception):
-    """当前 key 额度/频率耗尽，切换下一个 key 重试。"""
-
-    def __init__(self, code: int, body_text: str) -> None:
-        super().__init__(f"HTTP {code}")
-        self.code = code
-        self.body_text = body_text
-
-
 def _is_quota_error(code: int, body_text: str) -> bool:
     """402/429 必是额度或计费；403 带额度关键词才算（避免把 401 权限错当额度用）。"""
     if code in (402, 429):

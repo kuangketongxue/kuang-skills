@@ -30,7 +30,7 @@ metadata:
 
 收尾审计前必须先拉全量本次会话的用户消息，列清本次会话所有需求/改动/踩坑——这是"现役事实矩阵"（第 1 步）的用户需求侧输入。会话可能很长且经过 /compact，**compact 只压缩 LLM 上下文窗口、不动磁盘 transcript jsonl**，只看最近几轮或会话内摘要会漏审 compact 前的需求（曾漏 outdoor v2.5.3、think-aloud 部署、飞书字段规则等明确需求），导致收尾遗漏。
 
-运行 neat-freak **自带**的提取脚本（`scripts/extract_transcript.py`，与 self-improving-agent skill 同源、compact summary 盲区已修；默认 `--all` 扫当前 cwd 全部 jsonl + 24h 时间过滤，聚焦本次会话不扫历史全量）：
+运行 neat-freak 的提取脚本（`scripts/extract_transcript.py` 是 20 行 thin wrapper，真逻辑在 `~/.claude/skills/_shared/extract_transcript.py`，与 self-improving-agent skill 同源、compact summary 盲区已修；脚本默认扫全部 jsonl（等价于 `--all`，argparse `n=None` 走 `discover_jsonl(n=None)` 返回全部文件）+ 24h 时间过滤，聚焦本次会话不扫历史全量）：
 
 ```
 python ~/.claude/skills/neat-freak/scripts/extract_transcript.py --all --out /tmp/nf-transcript.md
@@ -41,19 +41,19 @@ python ~/.claude/skills/neat-freak/scripts/extract_transcript.py --all --out /tm
 python "C:/Users/kuang/.claude/skills/neat-freak/scripts/extract_transcript.py" --all --out "C:/Users/kuang/AppData/Local/Temp/nf-transcript.md"
 ```
 
-脚本默认 `--all` 扫当前 cwd 全部 jsonl（覆盖 compact 前后 + 跨 session 连续工作），并**按消息 timestamp 过滤只保留最近 24 小时**——收尾审计聚焦本次会话，不扫 18 天前已闭环的历史需求（曾因 `--all` 无时间窗扫到 850 条 / 跨 58 个 jsonl 18 天，浪费上下文）。`--hours N` 调时间窗（`--hours 0` 关闭过滤取全部历史，仅跨天全量审计用，输出很大务必 `--out` 写文件分段 Read）；`--n N` 调文件数量；`<path>` 指定单文件。过滤掉 tool_result / system-reminder 注入 / task-notification / skill body 全文（按 `isSidechain`/`isMeta` 标志跳过系统注入——这是过滤 skill body 污染的最可靠标志，标签检测会漏因为注入是纯文本无 `<command-message>` 标签），只留真实用户文本 + 用户调过的命令名。
+脚本默认扫全部 jsonl（不传任何参数时 argparse `n=None` → `discover_jsonl(n=None)` 返回全部文件，行为等价于 `--all`，覆盖 compact 前后 + 跨 session 连续工作），并**按消息 timestamp 过滤只保留最近 24 小时**——收尾审计聚焦本次会话，不扫 18 天前已闭环的历史需求（曾因 `--all` 无时间窗扫到 850 条 / 跨 58 个 jsonl 18 天，浪费上下文）。`--hours N` 调时间窗（`--hours 0` 关闭过滤取全部历史，仅跨天全量审计用，输出很大务必 `--out` 写文件分段 Read）；`--n N` 调文件数量；`<path>` 指定单文件。过滤掉 tool_result / system-reminder 注入 / task-notification / skill body 全文（按 `isSidechain`/`isMeta` 标志跳过系统注入——这是过滤 skill body 污染的最可靠标志，标签检测会漏因为注入是纯文本无 `<command-message>` 标签），只留真实用户文本 + 用户调过的命令名。
 
 **Read 输出文件全量回顾**，逐条核对：用户提过哪些需求、改了哪些文件/仓库、哪些踩坑已修、哪些需求还没走到 ✅完成 / 📋挂起 / ❌取消。**禁止只靠会话内摘要或最近几轮**——compact 摘要丢细节，transcript 原文不丢。结构详见 [[transcript-jsonl-structure]]。
 
-**默认就扫全部会话 + 24h 过滤**：脚本默认 `--all`（扫当前 cwd 全部 jsonl）+ 最近 24 小时时间窗，已覆盖"用户说'所有需求 / 全部对话 / 我的需求都完成了吗'"的场景——本次会话的需求都在 24h 窗内，不会漏（compact 不切 jsonl，同 session 的 compact 前后都在窗内）。**只有用户明确要"跨天全量审计 / 看更早会话的需求"时，才加 `--hours 0`（或 `--hours 168` 看一周）**取历史全量；此时输出可能很大，务必 `--out` 写文件分段 Read。跨 cwd 的会话脚本不覆盖（按 cwd 分组），列为限制告知用户。
+**默认就扫全部会话 + 24h 过滤**：脚本默认扫全部 jsonl（argparse `n=None`，行为等价于 `--all`）+ 最近 24 小时时间窗，已覆盖"用户说'所有需求 / 全部对话 / 我的需求都完成了吗'"的场景——本次会话的需求都在 24h 窗内，不会漏（compact 不切 jsonl，同 session 的 compact 前后都在窗内）。**只有用户明确要"跨天全量审计 / 看更早会话的需求"时，才加 `--hours 0`（或 `--hours 168` 看一周）**取历史全量；此时输出可能很大，务必 `--out` 写文件分段 Read。跨 cwd 的会话脚本不覆盖（按 cwd 分组），列为限制告知用户。
 
-**需求完成度审计（本次回顾的核心产出，不只是"列出"）**：逐条判定每条需求的闭环状态——这是全局规则"需求闭环（不许丢需求）"的审计入口（见用户 CLAUDE.md）。每条需求必须走到以下状态之一，输出矩阵：
+**需求完成度审计（本次回顾的核心产出）**：逐条判定每条需求的闭环状态——规则见用户 CLAUDE.md「需求闭环（不许丢需求）」铁律，本 skill 只提供审计入口和矩阵模板。输出矩阵：
 
 | 需求（一句话） | 状态 | 证据 |
 |---|---|---|
 | <需求> | ✅完成并验证 / 📋挂起（原因 + 等什么）/ ❌取消 / ⚠️被顶掉（最严重执行事故，立即处理或显式交代）/ ❓无法判定（原因） | <commit / 文件 / 验证结果 / 挂起原因> |
 
-被顶掉（⚠️）的必须当场处理或显式列入"待你决定"，不能静默放过——被顶掉是"最严重的执行事故"（用户 CLAUDE.md 原话），neat-freak 必须把它捞出来。
+被顶掉（⚠️）的必须当场处理或显式列入"待你决定"，不能静默放过（"最严重执行事故"，见用户 CLAUDE.md）。
 
 回顾出的"需求清单 + 改动清单"作为第 1 步现役事实矩阵的输入，与代码/运行态/文档/规则/记忆/工作区六面交叉核对，确保收尾不漏审 compact 前的需求。
 
@@ -133,7 +133,7 @@ python "C:/Users/kuang/.claude/skills/neat-freak/scripts/extract_transcript.py" 
 - 完整读取当前 skill、本项目和上级作用域中实际生效的规则文件。
 - 先运行只读盘点：`bash scripts/audit-inventory.sh <project-root>`；脚本不可用时做等价检查。
 - 记录规则文件、Markdown 清单、软链状态、Git/worktree 状态和关键文件体量。
-- 使用 [references/agent-paths.md](references/agent-paths.md) 的平台专属预算；未列出的平台按其中的三分法探测归类，不能把 Claude 自动记忆和 Codex 项目指令/生成记忆当成同一种文件。
+- 本机仅 Claude Code，记忆写入边界和尺寸预算见 [references/agent-paths.md](references/agent-paths.md)。
 
 「全量盘点」不等于把大型仓库每篇文档都塞进上下文：机械枚举全部文件，先读 README、规则、文档索引和与本次变更命中的文档；只有仓库很小、索引缺失、发现矛盾或用户明确要求 exhaustive audit 时才逐篇全文读取。
 
@@ -176,10 +176,10 @@ python "C:/Users/kuang/.claude/skills/neat-freak/scripts/extract_transcript.py" 
 只有用户请求、项目收尾合同或平台规则明确授权时才写记忆：
 
 - Claude 自动记忆可按其平台规则整理，但仍只处理本次作用域。
-- Codex/其他机器生成记忆通常不可手改；将该事实面标成 `generated-read-only`，只使用当前产品公开或环境明确规定的控制面（如 `/memories`、设置、配置项或获准的 correction input），再由宿主 consolidation 整合。不要为生成记忆自设文件尺寸阈值、压缩候选格式或重复 warning。
-- 未知平台的记忆机制先探测再动：找不到官方控制面就默认只读。
+- Codex/其他平台的生成记忆不在本机范围，机制见 [references/agent-paths.md](references/agent-paths.md)；找不到控制面默认只读。
 - docs-only 请求不应顺手制造新的长期记忆。
 - 会话复盘只记录真实发生、未来可复用的教训；「本次没有新教训」是合法结果，不能硬凑。
+- **记忆索引一致性（Claude 自动记忆适用时）**：MEMORY.md 索引 ↔ memory/ 文件必须双向一致（0 死链 / 0 孤儿）。机检：`python ~/.claude/skills/self-improving-agent/scripts/memory-audit.py --memory "<MEMORY.md 绝对路径>"`（exit 0 = clean）。孤儿文件（存在但没进索引）对索引式加载**不可见**，等于记忆静默死亡——09-03 实测某 MEMORY.md 有 15 个孤儿文件未被索引。
 
 ### 6. 验证并完成发布闭环
 
@@ -232,7 +232,16 @@ python "C:/Users/kuang/.claude/skills/neat-freak/scripts/extract_transcript.py" 
 
 ## 最终自检
 
+**机器门禁（推荐，自动过/不过）**：
+
+```
+bash ~/.claude/skills/neat-freak/scripts/self-check.sh <project-root>
+```
+
+覆盖 6 组检查（workspace 残留 / secret 泄露扫描 / 需求完成度矩阵 / 规则文件健康 / shared-script 版本一致性 / git 状态），FAIL 阻塞 exit 1，WARN 仅提示。手动 checklist 仍适用但机器门禁优先——人工自检靠纪律，机器自检靠 exit code。
+
 - [ ] 每个事实面都有状态（含 `not-applicable`），没有把未验证写成完成。
+- [ ] 记忆面（如适用）跑过 `memory-audit.py`：0 死链 / 0 孤儿 / 不超限；有孤儿已补索引或列入删除候选。
 - [ ] 需求完成度矩阵已输出，每条需求有状态（✅/📋/❌/⚠️/❓）+ 证据；被顶掉的已标 ⚠️ 并处理或显式交代。
 - [ ] 全部文件已机械枚举；受影响文件已阅读并作出「改/不改」判断。
 - [ ] 规则来源、同源方式和权限边界来自现场，而不是 skill 自己猜的。
