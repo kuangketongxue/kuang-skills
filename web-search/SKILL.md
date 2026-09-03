@@ -6,7 +6,7 @@ description: >-
   私有/需登录域名优先用这些而非 WebFetch。触发：用户要搜东西、查资料、找仓库/skill、核实事实、
   需要知乎站内 / 中文全网搜索、需要深度研究或结构化合成输出。
 metadata:
-  version: "3.3.0"
+  version: "3.3.1"
   category: search
 ---
 
@@ -43,18 +43,19 @@ metadata:
 | **Firecrawl Developer** | 找仓库/查 issue/PR/官方文档 passage，一手来源 | 一般 | `python3 scripts/firecrawl-dev.py` |
 | **知乎站内** | 知乎问答/文章，学习/高考复习经验 | 强 | `python3 scripts/zhihu-search.py` |
 | **全网** | 中文全网公开内容，新闻/政策/资讯 | 强 | `python3 scripts/global-search.py` |
-| **Exa** | 语义检索 + 深度多源研究 + 结构化合成输出 | 未验证（中文仍走知乎） | `python3 scripts/exa-search.py` |
+| **Exa** | 语义检索 + 深度多源研究 + 结构化合成输出 | 已验证可用（09-03 实测返回相关中文结果）；深度中文经验仍主力知乎 | `python3 scripts/exa-search.py` |
 
 **路由原则（铁律：默认并行带知乎）**：
 - **默认每次搜索都并行带上知乎（全网，必要时加站内）**。用户中文场景占绝大多数，知乎 OpenAPI 稳定、对中文资源（含 GitHub 仓库、网盘、学习资料）命中率高于 Tavily/Firecrawl。**除非查询是纯英文技术文档/英文概念，否则知乎不该缺席**——曾因"找仓库"只走 Tavily+Firecrawl 而漏掉知乎上的中文仓库/数据集资源。
 - 知乎问答 / 学习方法 / 高考复习经验 → **知乎站内 + 全网**
 - 中文全网新闻、政策、中文概念 → **全网**
-- 英文/通用、查文档、找答案 → **Tavily + 知乎全网**（并行，别只留 Tavily）
+- 英文/通用、查文档、找答案 → **Tavily + Exa + 知乎全网 三路并行**（Exa 补语义召回盲区，`publishedDate` 可判时效；别只留 Tavily）
 - 抓具体页面内容、读仓库结构 → **Firecrawl scrape**（见下文 `/v1/scrape`，与搜索端点不同）
 - **代码类查询 → Firecrawl Developer 打头**：描述能力找仓库（"a library for incremental PDF parsing"）、bug 定位（"报错信息 + 库名"）、API 合同溯源（"how do I configure retries <库名>"）。DevDex 数据：issue/PR 分辨率 track 0.66 第一，仓库发现 0.76 仅次 Parallel；文档 lookup 偏弱（0.47），纯 how-to 文档查询配 Tavily 并行
 - **找 GitHub 仓库 / 开源数据集 → Firecrawl Developer + Tavily + 知乎全网 三路并行**（英文仓库名/能力描述走 Developer，中文仓库、网盘资源知乎更易命中）
 - **需要深度研究/跨源对比/多步推理 → Exa `deep` 或 `deep-reasoning`**（Tavily/Firecrawl 只返回结果不合成，Developer 不做推理；这是 Exa 的独门场景）
 - **需要结构化提取（列出所有 X、抽字段）→ Exa + `outputSchema`**，脚本默认把 `output.content` 追加在 results 之后打印
+- 单点快速核实（某版本号/某事实/某 changelog 条目）→ **Exa `instant`/`fast`**（本机实测 ~5s 端到端出结果，常直击一手文档）；时效敏感查询（新版本/新闻/公告）→ Exa `maxAgeHours:24` + 知乎全网 `realtime` 并行
 - 拿不准 → 知乎全网 + 另一个都试，并行（见下"并行搜索"）
 
 ## API KEY 配置（本地，不进仓）
@@ -212,7 +213,7 @@ PYTHONIOENCODING=utf-8 python3 ~/.claude/skills/web-search/scripts/exa-search.py
   ```
   > 嵌套 JSON 在 shell 单引号里易被破坏（`json.loads` 报 Invalid JSON payload）；复杂 payload 先 Write 到临时文件再用 `"$PAYLOAD"` 传参，跑完清理
 - 与 Developer Index 的分工：查 issue/PR/README 一手 artifact 仍走 Developer（DevDex 命中率高）；Exa 的价值在**跨源推理**和**结构化合成**，两者互补
-- 中文能力未专门验证，中文查询仍优先知乎
+- 中文已实测可用（2026-09-03：高考复习中文查询返回相关中文站点；但深度经验内容弱于知乎一手答案）——中文场景 Exa 作补充引擎，主力仍知乎
 
 ### Firecrawl 抓页面（/v1/scrape，不是搜索，保留 curl）
 
@@ -246,7 +247,7 @@ GitHub 直连经常超时。搜索 API 是可靠的替代路径：
 
 六个引擎独立，可并行调用（同一 Bash 命令里分多个 `python3` 子进程，或同一条消息里多个工具调用），加速覆盖。常见组合：
 - 中文问题：知乎站内 + 全网 并行
-- 通用问题：Tavily + 全网 并行
+- 通用问题：Tavily + Exa + 全网 三路并行
 - 代码类（找仓库 / 查 bug issue/PR / API 行为）：**Firecrawl Developer + Tavily + 知乎全网 三路并行**
 - 找仓库 / 数据集：同上三路（英文能力描述 Developer 命中率最高，中文仓库、网盘资源知乎命中率更高，别漏；曾因只走 Tavily+Firecrawl 翻车）
 - 深度研究 / 跨源对比：Exa `deep`（+ Tavily 交叉验证），别只靠单引擎
