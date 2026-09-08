@@ -30,7 +30,7 @@ Claude Code's auto-memory (v2.1.32+) automatically records project patterns, deb
 |------|----------|
 | （所有动作） | **先完整回顾本次会话**（见上方强制第一步），再执行下述动作 |
 | memory-review / memory-status | `python "C:/Users/kuang/.claude/skills/self-improving-agent/scripts/memory-audit.py" --memory <MEMORY.md路径>` —— 一次跑出健康看板（行数 / topic 文件）+ 晋升候选 + 死链 / 超限。exit 0 = clean；1 = blocking（DEAD_LINK / OVER_LIMIT）；DUPLICATE / STALE 为 advisory |
-| backup | `PP='你的passphrase' bash "C:/Users/kuang/.claude/backups/work/backup.sh"` —— 单 commit 推 CLAUDE.md + memory + playbooks + 加密密钥到 `claude-memory-backup` 私有仓（Git Data API，不克隆）。完整 allowlist / 加密流程见 [backup-restore.md](references/backup-restore.md) |
+| backup | `bash "C:/Users/kuang/.claude/backups/work/backup.sh"` —— **不传 PP**，脚本自动从 DPAPI 读原 PP（手动传 PP 会用新 PP 加密覆盖、破坏还原链）。单 commit 推 CLAUDE.md + memory + playbooks + 加密密钥到 `claude-memory-backup` 私有仓（Git Data API，不克隆）。完整 allowlist / 加密流程见 [backup-restore.md](references/backup-restore.md) |
 | restore | PC 重置后：`git clone git@github.com:kuangketongxue/claude-memory-backup.git`，在仓库根目录跑 `PP='你的passphrase' bash restore.sh` 一键复原。完整 SOP 见 [backup-restore.md](references/backup-restore.md) |
 | promote（手动） | 从 MEMORY.md 提炼重复 ≥ 2-3 次的模式，写成规则进 `~/.claude/CLAUDE.md`（全局）或 `.claude/rules/<scope>.md`（按文件类型 scoped）。晋升后从 MEMORY.md 删原条目腾空间。详见下方 Promotion lifecycle |
 | extract（手动） | 把复用模式封装成新 skill：`~/.claude/skills/<name>/SKILL.md`（带 frontmatter）+ `references/` + examples |
