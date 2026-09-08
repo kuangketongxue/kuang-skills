@@ -7,7 +7,7 @@
 #### 狂客同学每天在用的 Claude Code Skills，全部开源在这里
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-8-10B981?style=for-the-badge)](#-skills-%E7%9B%AE%E5%BD%95)
+[![Skills](https://img.shields.io/badge/Skills-9-10B981?style=for-the-badge)](#-skills-%E7%9B%AE%E5%BD%95)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
 
@@ -31,6 +31,7 @@
 | 📬 [**agent-mail-readiness（邮件就绪检查）**](#-agent-mail-readiness邮件就绪检查) | Proactive Agent 发主动通知前的邮件通道就绪检查 |
 | 🔍 [**web-search（网络搜索）**](#-web-search网络搜索) | 五引擎并行：Tavily/Firecrawl/知乎，中文默认带知乎，API key 本地配置不进仓 |
 | 🧠 [**self-improving-agent（自我改进）**](#-self-improving-agent自我改进) | 把 Claude Code 自动记忆「策展」成可执行的项目规则/skill，并备份/还原到私有仓 |
+| 📖 [**weread-skills（微信读书）**](#️-weread-skills微信读书) | 微信读书助手：搜书/书架/笔记划线/阅读统计/书评/推荐/用户画像（17 接口，源自 Tencent/WeChatReading Apache-2.0） |
 
 ---
 
@@ -148,6 +149,27 @@ python3 scripts/zhihu-search.py '{"query":"高三如何提分"}'         # 知�
 把 Claude Code 自动记忆的 MEMORY.md 里的零散经验「策展」成可执行的项目知识：分析模式、把成熟经验晋升到 CLAUDE.md 或 `.claude/rules/`、把重复踩坑提炼成可复用 skill。还带 `/si:backup` / `/si:restore`——重置电脑后从私有仓 `claude-memory-backup` 一键还原整套「自我」（含加密的 web-search key 自动还原）。
 
 详见 [self-improving-agent/README.md](./self-improving-agent/README.md)。
+
+---
+
+### 📖 weread-skills（微信读书）
+
+微信读书 Agent 助手：书城搜索、书架管理、笔记划线导出、阅读统计、书籍点评、推荐发现、用户画像。走官方 Agent API Gateway（`POST https://i.weread.qq.com/api/agent/gateway`，17 个接口），API key 绑定用户身份、需要身份的接口自动注入。
+
+> 本 skill 复制自 [Tencent/WeChatReading](https://github.com/Tencent/WeChatReading) v1.0.4（Apache-2.0，Copyright © 2026 Tencent）。原文档已加来源与改动标注，完整 LICENSE 保留在同目录 `weread-skills/LICENSE`。
+
+```bash
+mkdir -p ~/.claude/.secrets
+cp ~/.claude/skills/weread-skills/.env.example ~/.claude/.secrets/weread.env
+# 填真实 key（https://weread.qq.com/r/weread-skills 获取），本仓不含 key
+```
+
+```
+"帮我搜一下三体"   "看看我的书架"   "我这个月读了多久"
+"导出我在这本书里的划线"   "这本书有什么热门划线"
+```
+
+详见 [weread-skills/README.md](./weread-skills/README.md) 与 [weread-skills/SKILL.md](./weread-skills/SKILL.md)。
 
 ---
 
