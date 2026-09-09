@@ -1,72 +1,48 @@
-# Adversarial Debate（对抗性辩论审查）
+# adversarial-debate
 
-<p align="center">
-  <a href="https://github.com/kuangketongxue/adversarial-debate/releases"><img src="https://img.shields.io/github/v/release/kuangketongxue/adversarial-debate?label=release&color=blue" alt="release"></a>
-  <a href="https://github.com/kuangketongxue/adversarial-debate/stargazers"><img src="https://img.shields.io/github/stars/kuangketongxue/adversarial-debate?style=flat&logo=github&color=yellow" alt="stars"></a>
-  <a href="https://github.com/kuangketongxue/adversarial-debate/forks"><img src="https://img.shields.io/github/forks/kuangketongxue/adversarial-debate?style=flat&logo=github" alt="forks"></a>
-  <a href="https://github.com/kuangketongxue/adversarial-debate/issues"><img src="https://img.shields.io/github/issues/kuangketongxue/adversarial-debate?style=flat&logo=github" alt="issues"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license"></a>
-</p>
+Claude Code 技能：**对抗性审查 + 第一性原理的多角色辩论**。正方构建最强支持论证，反方专职对抗驳斥（优先用你自己的原则打你），裁判只按客观规律裁决、不替你拍板。多轮交锋、有理有据、拒绝和稀泥与谄媚。
 
-<p align="center"><em>Claude Code skill · 对抗性辩论审查</em></p>
+## 何时用
 
+- 「辩一下 / 审查一下 / 这个目标现实吗 / 我能不能做到 X」
+- 人生 / 策略 / 赚钱 / 投资 / 事业 / 关系 / 目标可行性类决策
+- ❌ 技术方案、代码、工程可行性审查——知识源不同，别用本 skill
 
-> 对抗性审查 + 第一性原理的多角色辩论：正方构建最强支持论证，反方专职攻击，裁判只按客观规律裁决。回答一个问题——**你的目标到底能不能达成？**
-
-## 为什么需要
-
-问 AI「我这个计划可行吗」，最常见的两种废答：
-
-1. **谄媚式**：「这是个很棒的想法！当然可以！」——零信息量
-2. **和稀泥式**：「双方都有道理，要辩证看待」——等于没说
-
-本 skill 强制 AI 分饰三角，把模糊的直觉之争变成可裁决的结构化辩论：
-
-| 角色 | 职责 | 约束 |
-|---|---|---|
-| ✅ 正方 | 构建最强支持论证 | 只能从事实底座推导，须自曝最薄弱处 |
-| ❌ 反方 | 专职推翻 | 必须攻击最强版本（steelman），标注杀伤力 |
-| ⚖️ 裁判 | 客观裁决 | 禁止和稀泥；判定三选一 + 置信度 + 关键变量 |
-
-## 三条铁律
-
-1. **第一性原理** — 每个论点落到可验证的事实、数字、因果链。「大家都这么做」「专家说」出现即无效。
-2. **对抗性** — 反方攻击的是论点的最强版本；被有效驳倒的论点双方不得复用。
-3. **客观裁决** — 结论只能是「能 / 不能 / 有条件能」，附置信度与决定成败的关键变量（≤3 个）。
-
-## 用法
-
-在 Claude Code 里：
+## 结构（Karpathy LLM Wiki 三层）
 
 ```
-辩一下：我高三最后一年想从 500 分提到 650，现实吗？
+adversarial-debate/
+├── SKILL.md          # 薄入口：触发边界 + 五步辩论流程
+├── SCHEMA.md         # 行为契约：raw / wiki / schema 三层、Ingest-Query-Lint、铁律
+├── scripts/
+│   ├── fetch_kb.py   # 拉取知识源 → 无损瘦身 → 按字节切块 → 自检报告
+│   └── wiki_fts.py   # BM25 检索（SQLite FTS5 trigram，中文可用）
+└── wiki/             # 派生知识层（LLM 拥有，跨会话复利）
+    ├── index.md      # 目录：主题锚点
+    ├── log.md        # append-only 操作日志
+    ├── overview.md   # 认知宪法总纲：笔记权重 / 编号体系 / 已知缺陷
+    ├── synthesis/    # 反方弹药库、时效冲突
+    └── concepts/ entities/ comparisons/ queries/
 ```
 
-或明确触发：
+## 使用
 
-```
-用 adversarial-debate 审查这个目标：……
-```
+把本目录放进 `~/.claude/skills/`，然后对 Claude 说「辩一下：……」。
 
-输出结构：🎯 既定目标 → 📋 事实底座 → ✅ 正方立论 → ❌ 反方攻击 → 🔁 交锋 → ⚖️ 裁决（固定格式，含置信度与下一步验证动作）。
-
-## 安装
+知识源是一份你自己维护的飞书文档（你的认知宪法），通过环境变量指定：
 
 ```bash
-# Claude Code
-git clone https://github.com/kuangketongxue/adversarial-debate.git
-cp -r adversarial-debate/skills/adversarial-debate ~/.claude/skills/
+export ADVERSARIAL_KB_URL="https://your.feishu.cn/wiki/xxxx"
 ```
 
-或手动复制 `skills/adversarial-debate/SKILL.md` 到 `~/.claude/skills/adversarial-debate/SKILL.md`。
+每次调用都会**逐字通读全文**再开辩（Ingest），辩论后把增量结论沉淀进 `wiki/`（Lint）。
 
-## 设计取舍
+## 关键约束
 
-- **裁判可以判用户输。** 辩论的意义是让你在现实碰壁前先撞见真相，所以禁止情绪化鼓励。
-- **事实底座先行。** 没有共享事实的辩论必然沦为各说各话；所有论证只能引用底座 + 公认规律。
-- **待验证 ≠ 已确立。** 交锋中出现的新争议事实必须标注「待验证」，不得当论据使用。
-- **裁决必须回指论点。** 不接受「综合来看」这种无法证伪的措辞。
+- 知识源文档**只读**，且不留本地副本（临时块读完即清，BM25 索引同样只落 temp）
+- 所有论据必须标注文档内出处 `【编号】标题`，文档没覆盖的角度明确标注「文档未覆盖」
+- 裁判只交付判断（能 / 不能 / 有条件能 + 置信度 + 关键变量），**不替用户做决定**
 
-## License
+## LICENSE
 
 MIT
