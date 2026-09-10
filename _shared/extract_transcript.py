@@ -27,8 +27,19 @@ compact 之前被"忘掉"的完整用户输入。
   - 已解决 ✅：后续有正面确认（"不错""完美""给你👍"等）
   - 已解决 ✅（用户取消）：后续有否定词（"不需要""不用""下次再说"等）
   - 待处理 ⏳：无确认信号
-跨会话状态由 requirement_ledger.json 持久化，本次会话内检测独立于 ledger。
+跨会话状态由 requirement_ledger.json 持久化（默认 ~/.claude/state/），
+本次会话内检测独立于 ledger。
 
+跨会话未闭环需求（ledger 的核心产出）：
+一条需求若在**更早的会话**里被提出、至今仍是 ⏳待处理，就是用户 CLAUDE.md
+「需求闭环」铁律里的「被顶掉」事故——单靠会话内检测永远看不见，因为提出它的
+那个 jsonl 早已不在 24h 时间窗内。ledger 按需求文本哈希跨会话累计，每次运行
+输出「跨会话未闭环需求」段。
+
+  python extract_transcript.py --no-ledger                   # 不读写 ledger
+  python extract_transcript.py --ledger <path.json>           # 指定 ledger 路径
+
+# Version: 1.1.0 (2026-09-10) —— 实现此前只在文档字符串里承诺过的 requirement_ledger.json
 # Version: 1.0.0 (2026-09-01)
 """
 # 架构：本文件是唯一真实实现；neat-freak/scripts/ 与 self-improving-agent/scripts/
@@ -39,6 +50,7 @@ import sys
 import os
 import glob
 import re
+import hashlib
 import argparse
 from datetime import datetime, timedelta, timezone
 
@@ -267,6 +279,117 @@ def discover_jsonl(n=None):
     return files
 
 
+_TERMINAL_STATUS = ('✅已解决', '❌已取消')
+LEDGER_VERSION = 1
+LEDGER_MAX_ITEMS = 500
+LEDGER_PRUNE_DAYS = 60
+
+
+def default_ledger_path():
+    """~/.claude/state/requirement_ledger.json
+
+    放在 ~/.claude/state/ 而不是 skills/ 下：ledger 是可再生的派生状态，不属于
+    skill 资产（skills/ 要能原样分发到 kuang-skills 公开仓）。
+    """
+    return os.path.join(os.path.expanduser('~'), '.claude', 'state', 'requirement_ledger.json')
+
+
+def _req_key(txt):
+    """需求文本 → 稳定短哈希（跨会话、跨 jsonl 同一条需求得到同一把钥匙）。"""
+    norm = re.sub(r'\s+', '', txt or '')[0:120]
+    return hashlib.sha1(norm.encode('utf-8')).hexdigest()[:16]
+
+
+def update_ledger(path, kept, src_of):
+    """把本次会话的需求状态并入 ledger，返回「跨会话未闭环」条目列表。
+
+    为什么需要它：会话内检测（_detect_requirement_status）只能看到本次跑到的消息。
+    一条需求若在 7 天前的会话提出、从未闭环，那个 jsonl 早已被 --hours 24 过滤掉，
+    会话内检测永远不会再看见它 → 这类「被顶掉」需求（用户 CLAUDE.md 定义为最严重的
+    执行事故）成了盲区。ledger 按文本哈希跨会话累计，把盲区变成可机检输出。
+
+    src_of: {(ts, txt[:80]): jsonl 文件名}，用来判定「这条需求属于哪个会话」。
+    **不能用 discover_jsonl() 的文件列表当会话身份**——该列表不随时间窗变化
+    （--hours 只过滤消息、不过滤文件），拿它当 cur_sessions 会让跨会话检测永远失效：
+    两次运行的文件列表完全相同 → "others" 恒为空。必须用真正产出了保留消息的会话。
+
+    状态单调性：已解决/已取消是终态，后续重跑或重复出现不会把它降级回 ⏳待处理。
+
+    已知限制：ledger 只能记住它被运行之后见过的需求。首次使用时可对该项目跑一次
+    `--hours 0` 把历史需求灌进 ledger，之后 24h 窗口的常规运行才有对照基线。
+    """
+    now_iso = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    cur_sessions = set()
+    for ts, txt, cat, status in kept:
+        if cat == '需求' and status:
+            base = src_of.get((ts, txt[:80]))
+            if base:
+                cur_sessions.add(base)
+    items = {}
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and isinstance(data.get('items'), dict):
+            items = data['items']
+    except Exception:
+        items = {}  # 首次运行 / 文件损坏 → 从空 ledger 重建，不阻塞提取
+
+    for ts, txt, cat, status in kept:
+        if cat != '需求' or not status:
+            continue
+        key = _req_key(txt)
+        it = items.get(key)
+        if not isinstance(it, dict):
+            it = {'text': re.sub(r'\s+', ' ', txt.strip())[0:200],
+                  'first_seen': ts, 'sessions': []}
+        it['last_seen'] = ts
+        base = src_of.get((ts, txt[:80]))
+        if base and base not in it['sessions']:
+            it['sessions'].append(base)
+        del it['sessions'][10:]  # 只留最近 10 个来源会话，防无限增长
+        prev = it.get('status')
+        if status in _TERMINAL_STATUS or prev not in _TERMINAL_STATUS:
+            it['status'] = status
+        items[key] = it
+
+    # 剪枝：终态且久未出现的条目不再有审计价值，避免 ledger 无限膨胀
+    cutoff = datetime.now(timezone.utc) - timedelta(days=LEDGER_PRUNE_DAYS)
+    pruned = {}
+    for key, it in items.items():
+        if not isinstance(it, dict):
+            continue
+        if it.get('status') in _TERMINAL_STATUS:
+            dt = parse_ts(it.get('last_seen', ''))
+            if dt is not None and dt < cutoff:
+                continue
+        pruned[key] = it
+    if len(pruned) > LEDGER_MAX_ITEMS:
+        # 超量时优先丢终态、保留仍开着的需求
+        ordered = sorted(pruned.items(),
+                         key=lambda kv: (kv[1].get('status') in _TERMINAL_STATUS,
+                                         kv[1].get('last_seen', '')))
+        pruned = dict(ordered[-LEDGER_MAX_ITEMS:])
+
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump({'version': LEDGER_VERSION, 'updated_at': now_iso,
+                       'items': pruned}, fh, ensure_ascii=False, indent=1)
+    except OSError as e:
+        sys.stderr.write(f'[warn] ledger 写入失败（不影响提取）: {e}\n')
+
+    # 跨会话未闭环：仍是 ⏳ 且来源会话里有本次未参与的
+    carry = []
+    for it in pruned.values():
+        if it.get('status') != '⏳待处理':
+            continue
+        others = [s for s in (it.get('sessions') or []) if s not in cur_sessions]
+        if others:
+            carry.append(it)
+    carry.sort(key=lambda it: it.get('first_seen', ''))
+    return carry
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -277,6 +400,10 @@ def main():
     ap.add_argument('--hours', type=float, default=24.0,
                     help='只保留最近 N 小时的消息（默认 24，收尾审计聚焦本次会话）；0 关闭时间过滤取全部历史')
     ap.add_argument('--out', help='输出到文件（默认 stdout，中文多时建议写文件再 Read）')
+    ap.add_argument('--ledger', default=None,
+                    help='跨会话需求 ledger 路径（默认 ~/.claude/state/requirement_ledger.json）')
+    ap.add_argument('--no-ledger', action='store_true',
+                    help='不读写 ledger（纯只读提取，用于给别人看/敏感场景）')
     args = ap.parse_args()
 
     if args.path:
@@ -294,8 +421,12 @@ def main():
         sys.exit(1)
 
     all_msgs = []
+    src_of = {}  # (ts, txt[:80]) -> jsonl basename，供 ledger 判定需求属于哪个会话
     for f in files:
-        all_msgs.extend(extract_user_msgs(f))
+        base = os.path.basename(f)
+        for ts, txt, cat in extract_user_msgs(f):
+            all_msgs.append((ts, txt, cat))
+            src_of.setdefault((ts, txt[:80]), base)
 
     # 去重（timestamp + 内容前 80 字符，避免同一会话被读两次）
     seen = set()
@@ -324,6 +455,16 @@ def main():
 
     kept.sort(key=lambda x: x[0])
     kept = _detect_requirement_status(kept)
+
+    # 跨会话需求 ledger（纯附加产物；异常绝不影响提取本身）
+    carry = []
+    ledger_path = None
+    if not args.no_ledger:
+        ledger_path = args.ledger or default_ledger_path()
+        try:
+            carry = update_ledger(ledger_path, kept, src_of)
+        except Exception as e:
+            sys.stderr.write(f'[warn] ledger 更新异常（不影响提取）: {e}\n')
 
     if cutoff is not None:
         window_desc = f'，时间窗最近 {args.hours:g} 小时（过滤掉 {dropped_by_time} 条更早消息）'
@@ -359,6 +500,23 @@ def main():
         lines.append('')
         lines.append('## 需求状态概览')
         lines.append(f'- ✅已解决 {req_status_counts["✅已解决"]} · ❌已取消 {req_status_counts["❌已取消"]} · ⏳待处理 {req_status_counts["⏳待处理"]}')
+    if not args.no_ledger:
+        lines.append('')
+        lines.append('## 跨会话未闭环需求（ledger，即「被顶掉」候选）')
+        if carry:
+            lines.append(f'- ⚠️ {len(carry)} 条需求在更早的会话提出后一直未闭环：')
+            for it in carry[:15]:
+                first = (it.get('first_seen') or '')[:10]
+                nsess = len(it.get('sessions') or [])
+                text = re.sub(r'\s+', ' ', it.get('text', ''))[:90]
+                lines.append(f'  - ⏳ 首次 {first} · 跨 {nsess} 个会话 · {text}')
+            if len(carry) > 15:
+                lines.append(f'  - ... 另有 {len(carry) - 15} 条')
+            lines.append('- 处置：逐条判 ✅/📋/❌ 三态之一后写回；不许静默放过（用户 CLAUDE.md 需求闭环铁律）')
+        else:
+            lines.append('- 无：本次会话的需求没有更早会话遗留的未闭环项')
+        if ledger_path:
+            lines.append(f'- ledger: {ledger_path}')
     for f in files:
         lines.append(f'- 源文件: {os.path.basename(f)}')
     lines.append('')

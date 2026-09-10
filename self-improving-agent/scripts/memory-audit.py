@@ -6,22 +6,33 @@ Without this, "curate" relies on agent self-discipline — which is exactly
 the failure mode MindStudio flags: "People create memory files but never
 update them, so they become stale and eventually" (source [3]).
 
-Catches five categories:
-  1. DEAD_LINK    — MEMORY.md points to a topic file that no longer exists
-  2. ORPHAN       — a topic file exists in memory/ but is NOT indexed in MEMORY.md
+Catches seven categories (blocking ones marked *):
+  1. DEAD_LINK*   — MEMORY.md points to a topic file that no longer exists
+  2. ORPHAN*      — a topic file exists in memory/ but is NOT indexed in MEMORY.md
                     (invisible to index-based auto-load: the knowledge silently dies)
-  3. DUPLICATE    — two+ entries share the same short title (fuzzy)
-  4. OVER_LIMIT   — MEMORY.md exceeds Claude's 200-line / 25KB load cap
+  3. OVER_LIMIT*  — MEMORY.md exceeds Claude's 200-line / 25KB load cap
+  4. DUPLICATE    — two+ entries share the same short title (fuzzy)
   5. STALE        — entries whose linked topic file hasn't been touched in 60+ days
+  6. BUDGET       — MEMORY.md has crossed 70% of the load cap; time to promote/merge
+  7. PROMOTE_CANDIDATE / ALREADY_PROMOTED — the curation queue:
+                    candidate = topic file showing a recurring lesson (>=2 recurrence
+                                markers) or self-declaring promotion readiness
+                    promoted  = entry whose rule already graduated to CLAUDE.md/rules/,
+                                so it is now index overhead (keep only if it still holds
+                                unique supporting evidence)
 
-Exit code: 0 if no DEAD_LINK / OVER_LIMIT; 1 otherwise.
-(DUPLICATE and STALE are advisory — printed, don't block.)
+Exit code: 0 if no DEAD_LINK / ORPHAN / OVER_LIMIT; 1 otherwise.
+(DUPLICATE, STALE, BUDGET, PROMOTE_CANDIDATE and ALREADY_PROMOTED are advisory.)
 
 Usage:
   python ~/.claude/skills/self-improving-agent/scripts/memory-audit.py [--memory <path>]
 
 Default --memory: ~/.claude/projects/<cwd-slug>/memory/MEMORY.md
 
+Version: 1.2.0 (2026-09-10) — implement BUDGET (70% cap warning), PROMOTE_CANDIDATE and
+  ALREADY_PROMOTED; the SKILL.md Quick Reference promised a "晋升候选" list that the script
+  never actually produced (implementation now matches the promise). Fixed docstring: ORPHAN
+  blocks too, which the old docstring omitted.
 Version: 1.1.0 (2026-09-03) — add ORPHAN check (file present but unindexed; 15 real orphans found in prod MEMORY.md motivated this)
 Sources:
   [1] https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices
@@ -41,6 +52,19 @@ sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 MEM_LOAD_CAP_LINES = 200
 MEM_LOAD_CAP_BYTES = 25 * 1024
 STALE_DAYS = 60
+BUDGET_WARN_RATIO = 0.70  # user rule: report readings once past 70% of the platform budget
+
+# Recurrence markers — the same lesson showing up repeatedly is what justifies promotion
+# (promote-extract.md 判据 1: 重复 >= 2~3 次).
+_PROMOTE_RECUR = re.compile(
+    r'(反复|重复出现|多次|再次|两次|三次|第四次|第[二三]次|'
+    r'一周内[两二三]次|一周内\s*\d+\s*次|\d+\s*次纠正|纠正\s*\d+\s*次|'
+    r'同类(?:纠正|事故|错误)|又(?:犯|踩))'
+)
+# Self-declaring readiness ("值得晋升 / 应晋升").
+_PROMOTE_READY = re.compile(r'(应晋升|值得晋升|建议晋升|晋升候选|候选晋升)')
+# Already graduated to the rule layer.
+_PROMOTED_MARK = re.compile(r'已晋升|已经晋升|规则本体已晋升|晋升进')
 
 _BLOCKING = 0  # bumped to 1 when a blocking issue is found
 
@@ -93,6 +117,20 @@ def audit(path):
         margin_l = MEM_LOAD_CAP_LINES - n_lines
         margin_b = MEM_LOAD_CAP_BYTES - n_bytes
         print(f'  ✅ OVER_LIMIT: OK (headroom {margin_l} lines / {margin_b} bytes)')
+
+    # --- BUDGET (advisory): report once past 70% of the cap, before it becomes blocking ---
+    # Whisper at 70%, not at 100%: hitting the cap silently truncates what auto-loads.
+    used_l = n_lines / MEM_LOAD_CAP_LINES if MEM_LOAD_CAP_LINES else 0
+    used_b = n_bytes / MEM_LOAD_CAP_BYTES if MEM_LOAD_CAP_BYTES else 0
+    used = max(used_l, used_b)
+    if used > 1:
+        pass  # OVER_LIMIT already blocked; no need to nag twice
+    elif used >= BUDGET_WARN_RATIO:
+        driver = 'bytes' if used_b >= used_l else 'lines'
+        print(f'  ⚠️  BUDGET: {used:.0%} of the load cap used ({driver}-bound) — '
+              f'>={BUDGET_WARN_RATIO:.0%} threshold crossed: promote/merge/drop entries now.')
+    else:
+        print(f'  ✅ BUDGET: {used:.0%} of the load cap used (warn at {BUDGET_WARN_RATIO:.0%})')
 
     # --- DEAD_LINK (blocking) ---
     dead = []
@@ -163,6 +201,52 @@ def audit(path):
             print(f'     ... and {len(stale) - 10} more')
     else:
         print(f'  ✅ STALE: no entries older than {STALE_DAYS} days')
+
+    # --- PROMOTE_CANDIDATE / ALREADY_PROMOTED (advisory): the curation queue ---
+    # This is the whole point of the skill ("auto-memory captures, this curates"), so the
+    # audit has to emit the queue instead of leaving the agent to eyeball 87 entries.
+    candidates, promoted = [], []
+    for title, target, line, ln in entries:
+        abspath = os.path.join(base_dir, target)
+        body = ''
+        if os.path.isfile(abspath):
+            try:
+                with open(abspath, encoding='utf-8', errors='replace') as fh:
+                    body = fh.read(6000)
+            except OSError:
+                body = ''
+        ready = bool(_PROMOTE_READY.search(body))
+        already = bool(_PROMOTED_MARK.search(body) or _PROMOTED_MARK.search(line))
+        recur = len(_PROMOTE_RECUR.findall(body))
+        if already and not ready:
+            promoted.append((title, target, ln))
+        elif ready or recur >= 2:
+            candidates.append((title, target, ln, recur))
+
+    if candidates:
+        print(f'  ⚠️  PROMOTE_CANDIDATE: {len(candidates)} entry(ies) look promotion-ready '
+              f'(recurring lesson or self-declared) — 判据见 promote-extract.md:')
+        for title, target, ln, recur in candidates[:10]:
+            why = 'self-declared ready' if recur < 2 else f'{recur} recurrence markers'
+            print(f'     line {ln}: [{title}]({target})  — {why}')
+        if len(candidates) > 10:
+            print(f'     ... and {len(candidates) - 10} more')
+        print(f'     → 人工确认后晋升进 CLAUDE.md / rules/，然后从 MEMORY.md 删原条目腾空间，')
+        print(f'       并在 promotions.md 追加一条日志（没有日志下次会重复提同一件事）。')
+    else:
+        print(f'  ✅ PROMOTE_CANDIDATE: no recurring-lesson entries awaiting promotion')
+
+    if promoted:
+        print(f'  ⚠️  ALREADY_PROMOTED: {len(promoted)} entry(ies) whose rule already lives in '
+              f'CLAUDE.md / rules/ — keep only if the file holds unique supporting evidence:')
+        for title, target, ln in promoted[:10]:
+            print(f'     line {ln}: [{title}]({target})')
+        if len(promoted) > 10:
+            print(f'     ... and {len(promoted) - 10} more')
+        print(f'     → 规则层已全文加载，这些索引行是重复真相；只是留证据就标清楚，否则可删索引行腾空间。')
+        print(f'       （删的是 MEMORY.md 里的索引行，不是 topic 文件本身。）')
+    else:
+        print(f'  ✅ ALREADY_PROMOTED: no graduated rules still occupying index lines')
 
     print()
     print(f'=== verdict: {"BLOCKING ISSUE(S) FOUND" if _BLOCKING else "clean (all blocking checks pass)"} ===')

@@ -9,8 +9,18 @@
 # Exit code: 0 = all checks passed; 1 = one or more FAIL.
 # Only FAIL is blocking; WARN is advisory (print but don't fail).
 #
+# Version: 1.2.0 (2026-09-10) — [3/6] no longer false-WARNs: auto-discovers the newest
+#   *transcript*.md under TMPDIR/TEMP/TMP/AppData-Local-Temp (the old hardcoded
+#   /tmp/nf-transcript.md default never matched the timestamped name the extractor
+#   actually writes, so every run printed a bogus WARN). Also warns on >24h transcript
+#   residue, since the extract contains the full conversation incl. pasted secrets.
+# Version: 1.1.0 (2026-09-09) — fix WARN double-count; fix [4/6] false WARN
+#   (ls multi-file check → per-file -f test); fix [6/6] false WARN (enclosing
+#   repo like a dirty $HOME no longer counts as this project's git state);
+#   [3/6] transcript path via NF_TRANSCRIPT env, matrix via NF_REPORT env.
 # Usage:
 #   bash ~/.claude/skills/neat-freak/scripts/self-check.sh <project-root>
+#   NF_TRANSCRIPT=/path/to/transcript.md NF_REPORT=/path/to/report.md bash self-check.sh <root>
 #
 # Version: 1.0.0 (2026-09-01)
 # Refs: SKILL.md "最终自检" §; references/verification.md "风险决定证据深度"
@@ -38,7 +48,6 @@ for d in node_modules __pycache__ .next dist build .pytest_cache .mypy_cache .ru
   if [ -e "$ROOT/$d" ]; then
     # node_modules / dist may be legitimate; warn not fail
     warn "residual dir present: $ROOT/$d (legit or leftover — verify manually)"
-    WARN=$((WARN+1))
   fi
 done
 # .DS_Store / Thumbs.db anywhere = definite residue
@@ -69,22 +78,62 @@ else
 fi
 
 # ------------------------------------------------------------------
-# 3. Requirement-completion matrix present in the closeout transcript
+# 3. Requirement-completion matrix (需求完成度)
 # ------------------------------------------------------------------
 info "[3/6] Requirement-completion matrix (需求完成度)"
-NF_OUT="/tmp/nf-transcript.md"
-if [ -f "$NF_OUT" ]; then
-  if grep -qE '✅|📋|⚠️|❌|❓' "$NF_OUT"; then
-    if grep -qE '⚠️' "$NF_OUT"; then
-      warn "requirement matrix present but contains ⚠️ (被顶掉) — ensure each is addressed"
+NF_REPORT_FILE="${NF_REPORT:-}"
+if [ -n "$NF_REPORT_FILE" ] && [ -f "$NF_REPORT_FILE" ]; then
+  if grep -qE 'OK|PENDING|CANCEL|BLOCKED|UNKNOWN|✅|📋|⚠|❌|❓' "$NF_REPORT_FILE"; then
+    if grep -qE '⚠' "$NF_REPORT_FILE"; then
+      warn "closeout report contains blocked/topped-out items - ensure each is addressed"
     else
-      pass "requirement-completion matrix present with statuses"
+      pass "closeout report has requirement statuses"
     fi
   else
-    fail "nf-transcript.md exists but no requirement-status emoji (✅/📋/⚠️/❌/❓) found"
+    fail "report file exists but no requirement-status marker found: $NF_REPORT_FILE"
   fi
 else
-  warn "nf-transcript.md not at /tmp/nf-transcript.md — run extract_transcript.py --all --out /tmp/nf-transcript.md first"
+  info "no report file on disk (matrix lives in chat output) - set NF_REPORT to machine-check it"
+fi
+
+# Transcript discovery. NF_TRANSCRIPT wins; otherwise auto-discover the newest
+# *transcript*.md under the platform temp dirs. The old hardcoded default
+# /tmp/nf-transcript.md emitted a false WARN on literally every run, because
+# extract_transcript.py writes nf-transcript-<timestamp>.md (timestamped on
+# purpose - the output contains the whole conversation). 3.1.1 fixed sibling
+# false WARNs in [4/6] and [6/6] and missed this one.
+NF_OUT=""
+NF_OUT_SRC=""
+if [ -n "${NF_TRANSCRIPT:-}" ]; then
+  NF_OUT="$NF_TRANSCRIPT"
+  NF_OUT_SRC="NF_TRANSCRIPT"
+  if [ -f "$NF_OUT" ]; then
+    pass "session transcript present (via NF_TRANSCRIPT): $NF_OUT"
+  else
+    fail "NF_TRANSCRIPT points at a missing file: $NF_OUT"
+  fi
+else
+  for d in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}" "$HOME/AppData/Local/Temp" /tmp; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    cand="$(ls -t "$d"/*transcript*.md 2>/dev/null | head -1)"
+    if [ -n "$cand" ]; then
+      NF_OUT="$cand"
+      NF_OUT_SRC="auto-discovered"
+      break
+    fi
+  done
+  if [ -n "$NF_OUT" ]; then
+    info "transcript auto-discovered ($NF_OUT_SRC): $NF_OUT"
+    info "  (export NF_TRANSCRIPT=\"$NF_OUT\" to verify this exact file)"
+    # Sensitive residue: the extract contains the full conversation, including any
+    # secret the user ever pasted (see memory [[transcript-plaintext-key-risk]]).
+    # SKILL.md 要求回顾完成后立即删除；>24h 未删就是残留。
+    if [ -n "$(find "$NF_OUT" -mtime +0 2>/dev/null)" ]; then
+      warn "transcript residue >24h old - delete it after the review (contains raw keys/passphrases)"
+    fi
+  else
+    info "no transcript found in temp dirs - run extract_transcript.py --out <file> first"
+  fi
 fi
 
 # ------------------------------------------------------------------
@@ -101,7 +150,11 @@ for f in CLAUDE.md AGENTS.md .claude/CLAUDE.md; do
     fi
   fi
 done
-if ! ls "$ROOT"/CLAUDE.md "$ROOT"/AGENTS.md "$ROOT"/.claude/CLAUDE.md 2>/dev/null | grep -q .; then
+RULE_FOUND=0
+for f in CLAUDE.md AGENTS.md .claude/CLAUDE.md; do
+  [ -f "$ROOT/$f" ] && RULE_FOUND=1
+done
+if [ "$RULE_FOUND" -eq 0 ]; then
   warn "no CLAUDE.md / AGENTS.md / .claude/CLAUDE.md found (may be legitimate for pre-project dirs)"
 fi
 
@@ -117,7 +170,7 @@ if [ -f "$SHARED" ]; then
   # both wrappers should reference _shared (thin wrapper check)
   for w in "$NF_SCRIPT" "$SI_SCRIPT"; do
     if [ -f "$w" ] && grep -q '_shared' "$w" 2>/dev/null && [ "$(wc -l < "$w")" -lt 40 ]; then
-      pass "wrapper thin & references _shared: $(basename $(dirname $w))/$(basename $w)"
+      pass "wrapper thin & references _shared: $(basename "$(dirname "$(dirname "$w")")")/$(basename "$w")"
     else
       warn "wrapper may have drifted (not thin or missing _shared ref): $w"
     fi
@@ -130,11 +183,17 @@ fi
 # 6. git state awareness (don't claim "clean" if dirty)
 # ------------------------------------------------------------------
 info "[6/6] git state awareness"
-if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if git -C "$ROOT" diff --quiet HEAD -- 2>/dev/null; then
-    pass "working tree clean"
+GIT_TOP="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$GIT_TOP" ]; then
+  # skip entirely when nothing under ROOT is tracked by the enclosing repo
+  # (scratch/temp dirs inside e.g. a $HOME repo must not false-alarm)
+  if [ -z "$(git -C "$ROOT" ls-files -- . 2>/dev/null | head -1)" ]      && [ -z "$(git -C "$ROOT" status --porcelain -- . 2>/dev/null)" ]; then
+    info "no tracked files under $ROOT in enclosing repo ($GIT_TOP) — skipping git-clean check"
+  # scope to $ROOT so an enclosing dirty repo (e.g. a $HOME repo) does not false-alarm
+  elif git -C "$ROOT" diff --quiet HEAD -- . 2>/dev/null      && [ -z "$(git -C "$ROOT" status --porcelain -- . 2>/dev/null)" ]; then
+    pass "project tree clean (scoped to $ROOT; repo: $GIT_TOP)"
   else
-    warn "working tree has unstaged changes — verify they're intentional before closeout"
+    warn "project tree has changes (scoped to $ROOT; repo: $GIT_TOP) — verify they're intentional"
   fi
 else
   info "not a git repo — skipping git-clean check"
