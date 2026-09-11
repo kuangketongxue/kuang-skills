@@ -149,12 +149,27 @@ def audit(path):
         print(f'  ✅ DEAD_LINK: all {len(entries)} indexed files exist')
 
     # --- ORPHAN (blocking): topic file exists but is not indexed in MEMORY.md ---
+    # Exception: files logged as promoted in ~/.claude/promotions.md are intentionally
+    # de-indexed (rule graduated to CLAUDE.md, topic file kept as evidence per SKILL.md
+    # promote flow: "晋升后从 MEMORY.md 删原条目腾空间").
     indexed_targets = {os.path.normcase(os.path.normpath(os.path.join(base_dir, t)))
                        for _, t, _, _ in entries}
     actual_files = {f for f in os.listdir(base_dir)
                     if f.endswith('.md') and f != os.path.basename(path)}
+    # Whitelist: files whose rules graduated to CLAUDE.md are de-indexed on purpose.
+    promoted_files = set()
+    prom_path = os.path.join(os.path.expanduser('~'), '.claude', 'promotions.md')
+    if os.path.isfile(prom_path):
+        try:
+            with open(prom_path, encoding='utf-8', errors='replace') as fh:
+                prom_text = fh.read()
+            promoted_files = {m.group(1) for m in re.finditer(r'- 来源：`([^`]+\.md)`', prom_text)}
+        except OSError:
+            pass
     orphans = sorted(f for f in actual_files
-                     if os.path.normcase(os.path.normpath(os.path.join(base_dir, f))) not in indexed_targets)
+                     if os.path.normcase(os.path.normpath(os.path.join(base_dir, f))) not in indexed_targets
+                     and f not in promoted_files)
+    n_promoted = len(actual_files & promoted_files)
     if orphans:
         print(f'  ❌ ORPHAN: {len(orphans)} memory file(s) NOT in MEMORY.md index (invisible to auto-load):')
         for f in orphans[:10]:
@@ -163,6 +178,8 @@ def audit(path):
             print(f'     ... and {len(orphans) - 10} more')
         print(f'     → add an index line "- [Title](file.md) — hook", or delete the file if one-off completed.')
         _BLOCKING = 1
+    elif n_promoted:
+        print(f'  ✅ ORPHAN: all topic files are indexed or whitelisted ({n_promoted} promoted via promotions.md)')
     else:
         print(f'  ✅ ORPHAN: all {len(actual_files)} topic files are indexed')
 
