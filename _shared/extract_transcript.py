@@ -29,6 +29,14 @@ compact 之前被"忘掉"的完整用户输入。
   - 待处理 ⏳：无确认信号
 跨会话状态由 requirement_ledger.json 持久化（默认 ~/.claude/state/），
 本次会话内检测独立于 ledger。
+已解决/已取消的需求默认折叠——只在「需求状态概览」段显示数字，不逐条列全文
+（回顾审计真正需要看的是 ⏳待处理 和非需求类消息）。用 --show-resolved 恢复完整输出。
+缓存（避免短时间重复提取）：
+neat-freak 跑完紧接着跑 self-improving-agent 时（或反过来），从头读一遍 jsonl 是浪费。
+脚本默认带 30 分钟缓存：jsonl 文件列表相同 + TTL 未过 → 直接复用上次输出。
+不查 mtime/size——会话进行中每次 tool call 都让 jsonl 增长，查了就永不命中；
+增长带来的新内容（skill 执行日志、tool result）本就被 isMeta/isSidechain 过滤。
+用 --no-cache 强制重新提取，--cache-ttl N 调有效期（分钟），--cache-check-content 开严格模式（查 mtime/size，确保数据真没变）。
 
 跨会话未闭环需求（ledger 的核心产出）：
 一条需求若在**更早的会话**里被提出、至今仍是 ⏳待处理，就是用户 CLAUDE.md
@@ -390,6 +398,90 @@ def update_ledger(path, kept, src_of):
     return carry
 
 
+def default_cache_paths():
+    """~/.claude/state/transcript_cache.json + .md
+
+    缓存提取结果：neat-freak 跑完紧接着跑 self-improving-agent 时（或反过来），
+    从头读一遍 jsonl 是浪费。默认按「jsonl 文件列表 + TTL」判新鲜度——不查 mtime/size，
+    因为会话进行中每次 tool call（Read/Bash）都会让 jsonl 增长，mtime 一直在变，
+    严格匹配等于永不命中。jsonl 增长带来的新内容（skill 执行日志、tool result）
+    本来就被 isMeta/isSidechain 过滤，不影响输出质量。
+    不区分调用方——谁先跑都写缓存，第二个跑的命中。
+    """
+    base = os.path.join(os.path.expanduser('~'), '.claude', 'state')
+    return (os.path.join(base, 'transcript_cache.json'),
+            os.path.join(base, 'transcript_cache.md'))
+
+
+def check_cache(meta_path, output_path, args, files):
+    """检查缓存是否新鲜。返回 (hit: bool, output: str or None)。
+
+    命中条件全满足才复用（任一不满足就重新提取）：
+    - 缓存文件存在且 TTL 未过
+    - hours / show_resolved 参数匹配
+    - jsonl 文件列表完全相同（没有新 session 的 jsonl 出现）
+    默认不查 mtime/size（见上方说明）；--cache-check-content 开启严格模式才查。
+    """
+    try:
+        with open(meta_path, encoding='utf-8') as f:
+            meta = json.load(f)
+    except Exception:
+        return False, None
+    generated = parse_ts(meta.get('generated_at'))
+    if generated is None:
+        return False, None
+    if datetime.now(timezone.utc) - generated > timedelta(minutes=args.cache_ttl):
+        return False, None
+    if meta.get('hours') != args.hours:
+        return False, None
+    if meta.get('show_resolved') != args.show_resolved:
+        return False, None
+    cached_fps = meta.get('jsonl_fingerprints', {})
+    if set(cached_fps.keys()) != set(files):
+        return False, None
+    if args.cache_check_content:
+        for f in files:
+            try:
+                st = os.stat(f)
+                cached = cached_fps.get(f, {})
+                if int(st.st_mtime) != cached.get('mtime') or st.st_size != cached.get('size'):
+                    return False, None
+            except OSError:
+                return False, None
+    try:
+        with open(output_path, encoding='utf-8') as f:
+            output = f.read()
+    except Exception:
+        return False, None
+    return True, output
+
+
+def write_cache(meta_path, output_path, args, files, output):
+    """写缓存元数据 + 输出。失败只 warn 不阻塞提取。"""
+    fps = {}
+    for f in files:
+        try:
+            st = os.stat(f)
+            fps[f] = {'mtime': int(st.st_mtime), 'size': st.st_size}
+        except OSError:
+            pass
+    meta = {
+        'version': 1,
+        'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'hours': args.hours,
+        'show_resolved': args.show_resolved,
+        'jsonl_fingerprints': fps,
+    }
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(meta_path)), exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(output)
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1)
+    except OSError as e:
+        sys.stderr.write(f'[warn] 缓存写入失败（不影响提取）: {e}\n')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -404,6 +496,14 @@ def main():
                     help='跨会话需求 ledger 路径（默认 ~/.claude/state/requirement_ledger.json）')
     ap.add_argument('--no-ledger', action='store_true',
                     help='不读写 ledger（纯只读提取，用于给别人看/敏感场景）')
+    ap.add_argument('--show-resolved', action='store_true',
+                    help='默认折叠已解决/已取消的需求（只在概览显示数字）。加此参数恢复逐条列出')
+    ap.add_argument('--no-cache', action='store_true',
+                    help='跳过缓存，强制重新提取')
+    ap.add_argument('--cache-ttl', type=float, default=30.0,
+                    help='缓存有效期（分钟，默认 30）。jsonl 文件列表相同 + TTL 未过 → 复用上次提取结果')
+    ap.add_argument('--cache-check-content', action='store_true',
+                    help='严格模式：不仅查文件列表，还查每个 jsonl 的 mtime/size。会话进行中 jsonl 持续增长会导致此模式几乎永不命中，仅用于确保数据真没变的场景')
     args = ap.parse_args()
 
     if args.path:
@@ -419,6 +519,30 @@ def main():
                                         '.claude', 'projects', sanitize_cwd(os.getcwd()))
                          + '\n')
         sys.exit(1)
+
+    # 缓存检查：短时间内重复跑（neat-freak → self-improving-agent 或反过来）时跳过重新提取。
+    # 默认只查 TTL + 文件列表（不查 mtime/size）——会话进行中 jsonl 因 tool call 持续增长，
+    # 查 mtime 等于永不命中。增长带来的新内容（skill 日志、tool result）被 isMeta/isSidechain 过滤。
+    cache_meta_path, cache_output_path = default_cache_paths()
+    if not args.no_cache:
+        hit, cached = check_cache(cache_meta_path, cache_output_path, args, files)
+        if hit:
+            age_min = '未知'
+            try:
+                with open(cache_meta_path, encoding='utf-8') as f:
+                    meta = json.load(f)
+                g = parse_ts(meta.get('generated_at'))
+                if g:
+                    age_min = f'{(datetime.now(timezone.utc) - g).total_seconds() / 60:.1f}'
+            except Exception:
+                pass
+            if args.out:
+                with open(args.out, 'w', encoding='utf-8') as f:
+                    f.write(cached)
+                sys.stderr.write(f'[cache] 命中缓存（{age_min} 分钟前的结果，跳过重新提取），已写入 {args.out}\n')
+            else:
+                sys.stdout.write(cached)
+            return
 
     all_msgs = []
     src_of = {}  # (ts, txt[:80]) -> jsonl basename，供 ledger 判定需求属于哪个会话
@@ -521,7 +645,17 @@ def main():
         lines.append(f'- 源文件: {os.path.basename(f)}')
     lines.append('')
 
-    for ts, txt, cat, status in non_noise:
+    # 已解决/已取消的需求默认折叠——回顾审计真正需要看的是 ⏳待处理 和非需求类消息。
+    # 会话内检测标为终态的需求只在「需求状态概览」段显示数字，不逐条列全文（减噪音）。
+    resolved_count = sum(1 for _, _, cat, status in non_noise
+                         if cat == '需求' and status in _TERMINAL_STATUS)
+    if args.show_resolved:
+        show_msgs = non_noise
+    else:
+        show_msgs = [(ts, txt, cat, status) for ts, txt, cat, status in non_noise
+                     if not (cat == '需求' and status in _TERMINAL_STATUS)]
+
+    for ts, txt, cat, status in show_msgs:
         tag_parts = [cat] if cat else []
         if status:
             tag_parts.append(status)
@@ -531,6 +665,11 @@ def main():
         lines.append(txt)
         lines.append('')
 
+    if resolved_count and not args.show_resolved:
+        lines.append(f'## 已折叠 {resolved_count} 条已解决/已取消需求')
+        lines.append('（只在上方概览显示数字，不逐条列全文。用 `--show-resolved` 恢复完整输出）')
+        lines.append('')
+
     output = '\n'.join(lines)
     if args.out:
         with open(args.out, 'w', encoding='utf-8') as f:
@@ -538,6 +677,10 @@ def main():
         sys.stderr.write(f'已写入 {len(kept)} 条用户消息到 {args.out}\n')
     else:
         sys.stdout.write(output)
+
+    # 写缓存（非 --no-cache 时，使下次短时间内的运行命中缓存）
+    if not args.no_cache:
+        write_cache(cache_meta_path, cache_output_path, args, files, output)
 
 
 if __name__ == '__main__':

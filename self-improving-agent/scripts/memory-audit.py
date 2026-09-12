@@ -6,7 +6,7 @@ Without this, "curate" relies on agent self-discipline — which is exactly
 the failure mode MindStudio flags: "People create memory files but never
 update them, so they become stale and eventually" (source [3]).
 
-Catches seven categories (blocking ones marked *):
+Catches nine categories (blocking ones marked *):
   1. DEAD_LINK*   — MEMORY.md points to a topic file that no longer exists
   2. ORPHAN*      — a topic file exists in memory/ but is NOT indexed in MEMORY.md
                     (invisible to index-based auto-load: the knowledge silently dies)
@@ -20,15 +20,23 @@ Catches seven categories (blocking ones marked *):
                     promoted  = entry whose rule already graduated to CLAUDE.md/rules/,
                                 so it is now index overhead (keep only if it still holds
                                 unique supporting evidence)
+  8. DEFRAG       — same theme scattered across 2+ topic files (filename keyword
+                    grouping); suggests merging into one authoritative file + pointers
+  9. RETENTION    — entries that look like completed one-time task memories (progress
+                    logs or completion markers); per user rule, these are noise to prune
 
 Exit code: 0 if no DEAD_LINK / ORPHAN / OVER_LIMIT; 1 otherwise.
-(DUPLICATE, STALE, BUDGET, PROMOTE_CANDIDATE and ALREADY_PROMOTED are advisory.)
+(DUPLICATE, STALE, BUDGET, PROMOTE_CANDIDATE, ALREADY_PROMOTED, DEFRAG and RETENTION are advisory.)
 
 Usage:
   python ~/.claude/skills/self-improving-agent/scripts/memory-audit.py [--memory <path>]
 
 Default --memory: ~/.claude/projects/<cwd-slug>/memory/MEMORY.md
 
+Version: 1.3.0 (2026-09-11) — add DEFRAG (scattered topic file detection via filename
+  keyword grouping, source: basicmemory.com "memory defragmentation") and RETENTION
+  (completed one-time task memory detection, source: semantica "auto retention pruning").
+  Both advisory; brings total to nine categories.
 Version: 1.2.0 (2026-09-10) — implement BUDGET (70% cap warning), PROMOTE_CANDIDATE and
   ALREADY_PROMOTED; the SKILL.md Quick Reference promised a "晋升候选" list that the script
   never actually produced (implementation now matches the promise). Fixed docstring: ORPHAN
@@ -65,6 +73,11 @@ _PROMOTE_RECUR = re.compile(
 _PROMOTE_READY = re.compile(r'(应晋升|值得晋升|建议晋升|晋升候选|候选晋升)')
 # Already graduated to the rule layer.
 _PROMOTED_MARK = re.compile(r'已晋升|已经晋升|规则本体已晋升|晋升进')
+
+# RETENTION: completion markers signaling a one-time task is done (prune candidates).
+# Source: semantica "auto retention pruning" + user CLAUDE.md "已完成的一次性任务记忆该删".
+_RETENTION_DONE = re.compile(r'(已完成|已部署|已上线|已解决|已发布)')
+_RETENTION_PROGRESS = re.compile(r'进度')
 
 _BLOCKING = 0  # bumped to 1 when a blocking issue is found
 
@@ -264,6 +277,85 @@ def audit(path):
         print(f'       （删的是 MEMORY.md 里的索引行，不是 topic 文件本身。）')
     else:
         print(f'  ✅ ALREADY_PROMOTED: no graduated rules still occupying index lines')
+
+    # --- DEFRAG (advisory): scattered topic files that could be consolidated ---
+    # Source: basicmemory.com "memory defragmentation" — when the same theme is
+    # spread across many small files, knowledge fragments and becomes hard to
+    # maintain. Suggest merging related files into one authoritative topic file
+    # with pointers from the rest.
+    # Heuristic: group files by their 2-token prefix (e.g. "outdoor-checklist"
+    # groups all files starting with those tokens). Groups with 2+ files are
+    # defrag candidates; the largest file is the suggested authoritative one.
+    topic_clusters = defaultdict(list)  # prefix -> [(filename, size_bytes)]
+    for f in sorted(actual_files):
+        stem = f[:-3] if f.endswith('.md') else f
+        tokens = [t for t in re.split(r'[-_]', stem) if len(t) >= 3]
+        if len(tokens) >= 2:
+            key = '-'.join(tokens[:2])
+        elif tokens:
+            key = tokens[0]
+        else:
+            continue
+        fpath = os.path.join(base_dir, f)
+        try:
+            fsize = os.path.getsize(fpath)
+        except OSError:
+            fsize = 0
+        topic_clusters[key].append((f, fsize))
+    defrag = {k: v for k, v in topic_clusters.items() if len(v) > 1}
+    if defrag:
+        print(f'  ⚠️  DEFRAG: {len(defrag)} topic cluster(s) with 2+ scattered files (advisory):')
+        for kw, files in sorted(defrag.items(), key=lambda x: -len(x[1]))[:10]:
+            files_sorted = sorted(files, key=lambda x: -x[1])
+            auth = files_sorted[0][0]
+            auth_sz = files_sorted[0][1]
+            others = files_sorted[1:]
+            print(f'     "{kw}" ({len(files)} files):')
+            print(f'       authoritative: {auth} ({auth_sz} bytes)')
+            for f, sz in others:
+                print(f'       → {f} ({sz} bytes)')
+        if len(defrag) > 10:
+            print(f'     ... and {len(defrag) - 10} more clusters')
+        print(f'     → 合并同主题文件为权威表述，其余缩成指针；减少碎片、降低索引行数。')
+    else:
+        print(f'  ✅ DEFRAG: no scattered topic clusters detected')
+
+    # --- RETENTION (advisory): completed one-time task memories to prune ---
+    # Source: semantica "auto retention pruning" + user CLAUDE.md rule:
+    # "已完成的一次性任务记忆该删" — progress memories for completed tasks are
+    # noise; reviewing them later suggests work still pending.
+    # Detects: (a) entries with "进度" in title (progress logs), (b) entries whose
+    # index line or topic file body contains completion markers (已完成/已部署/已上线…).
+    # Does NOT auto-execute — retention pruning is destructive, requires user confirm.
+    retention = []
+    for title, target, line, ln in entries:
+        is_progress = bool(_RETENTION_PROGRESS.search(title) or _RETENTION_PROGRESS.search(line))
+        abspath = os.path.join(base_dir, target)
+        body = ''
+        if os.path.isfile(abspath):
+            try:
+                with open(abspath, encoding='utf-8', errors='replace') as fh:
+                    body = fh.read(6000)
+            except OSError:
+                body = ''
+        is_done = bool(_RETENTION_DONE.search(line) or _RETENTION_DONE.search(body))
+        if is_progress or is_done:
+            reasons = []
+            if is_progress:
+                reasons.append('progress log')
+            if is_done:
+                reasons.append('completion markers')
+            retention.append((title, target, ln, ' + '.join(reasons)))
+    if retention:
+        print(f'  ⚠️  RETENTION: {len(retention)} entries look like completed task memories (advisory):')
+        for title, target, ln, reason in retention[:10]:
+            print(f'     line {ln}: [{title}]({target})  — {reason}')
+        if len(retention) > 10:
+            print(f'     ... and {len(retention) - 10} more')
+        print(f'     → 按「已完成的一次性任务记忆该删」：删进度内容保留可复用教训，或整条下架。')
+        print(f'       破坏性操作，需用户确认后执行。')
+    else:
+        print(f'  ✅ RETENTION: no completed-task memories detected')
 
     print()
     print(f'=== verdict: {"BLOCKING ISSUE(S) FOUND" if _BLOCKING else "clean (all blocking checks pass)"} ===')
